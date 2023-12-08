@@ -2,6 +2,7 @@
 import copy
 import enum
 from typing import Dict, List, Optional, Union
+import torch
 
 from vllm.block import LogicalTokenBlock
 from vllm.sampling_params import SamplingParams
@@ -66,6 +67,11 @@ class SequenceData:
     ) -> None:
         self.prompt_token_ids = prompt_token_ids
         self.output_token_ids: List[int] = []
+        # we use a list here because
+        # we can generate the same token multiple times in different locations
+        # for each entry in the list, it's a map of
+        # token_id -> probability distribution
+        self.draft_token_probs: List[Dict[int, torch.Tensor]] = []
         self.cumulative_logprob = 0.0
 
     def append_token_id(self, token_id: int, logprob: float) -> None:
@@ -88,6 +94,17 @@ class SequenceData:
         if not self.output_token_ids:
             return self.prompt_token_ids[-1]
         return self.output_token_ids[-1]
+
+    def get_draft_token_ids(self) -> List[int]:
+        draft_tokens = [list(tp.keys())[0] for tp in self.draft_token_probs]
+        return draft_tokens
+
+    def get_verified_token_ids(self) -> List[int]:
+        draft_token_ids = self.get_draft_token_ids()
+        assert self.output_token_ids[-len(draft_token_ids):] == draft_token_ids
+        if len(draft_token_ids) == len(self.output_token_ids):
+            return [self.prompt_token_ids[-1]] + draft_token_ids
+        return self.output_token_ids[-len(draft_token_ids) - 1:]
 
     def __repr__(self) -> str:
         return (f"SequenceData("
@@ -119,6 +136,7 @@ class Sequence:
         self.block_size = block_size
 
         self.data = SequenceData(prompt_token_ids)
+        self.step_gen_token_ids: List[int] = []
         self.output_logprobs: SampleLogprobs = []
         self.output_text = ""
 
@@ -139,6 +157,9 @@ class Sequence:
             block_size=self.block_size,
         )
         self.logical_token_blocks.append(block)
+
+    def _delete_logical_block(self, block: LogicalTokenBlock) -> None:
+        self.logical_token_blocks.remove(block)
 
     def _append_tokens_to_blocks(self, token_ids: List[int]) -> None:
         cursor = 0
@@ -165,6 +186,18 @@ class Sequence:
         self._append_tokens_to_blocks([token_id])
         self.output_logprobs.append(logprobs)
         self.data.append_token_id(token_id, logprobs[token_id])
+
+    # delete n tokens from the end of the sequence
+    def delete_tailing_tokens(self, n: int) -> None:
+        while n > 0:
+            assert len(self.logical_token_blocks) > 0
+            last_block = self.logical_token_blocks[-1]
+            if last_block.num_tokens < n:
+                n -= last_block.num_tokens
+                self._delete_logical_block(last_block)
+            else:
+                last_block.delete_last_tokens(n)
+                break
 
     def get_len(self) -> int:
         return self.data.get_len()
@@ -218,6 +251,11 @@ class Sequence:
         return (f"Sequence(seq_id={self.seq_id}, "
                 f"status={self.status.name}, "
                 f"num_blocks={len(self.logical_token_blocks)})")
+
+    def get_draft_probdis(self, token_id: int, pos: int) -> torch.Tensor:
+        token_probdis = self.data.draft_token_probs[pos]
+        assert token_id in token_probdis
+        return token_probdis[token_id]
 
 
 class SequenceGroup:
@@ -361,17 +399,23 @@ class SequenceOutput:
         output_token: The output token ID.
         logprobs: The logprobs of the output token.
             (Token id -> logP(x_i+1 | x_0, ..., x_i))
+        accepted_tokens: The tokens that are accepted by the speculative decoding.
+        probdis: The probability distribution of the output token. It is used in speculative decoding.
     """
 
     def __init__(
         self,
         parent_seq_id: int,
-        output_token: int,
-        logprobs: Dict[int, float],
+        output_token: Union[int, List[int]],
+        logprobs: Union[Dict[int, float], List[Dict[int, float]]],
+        probdis: Optional[List[Dict[int, torch.Tensor]]] = None,
     ) -> None:
         self.parent_seq_id = parent_seq_id
         self.output_token = output_token
         self.logprobs = logprobs
+
+        self.accepted_tokens = None
+        self.probdis = probdis
 
     def __repr__(self) -> str:
         return (f"SequenceOutput(parent_seq_id={self.parent_seq_id}, "

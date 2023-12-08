@@ -46,6 +46,14 @@ class LogicalTokenBlock:
         assert self.num_tokens > 0
         return self.token_ids[self.num_tokens - 1]
 
+    # delete num tokens from the end in the same block
+    def delete_last_tokens(self, num: int) -> None:
+        assert num > 0
+        assert num <= self.num_tokens
+        self.num_tokens -= num
+        for i in range(self.num_tokens, len(self.token_ids)):
+            self.token_ids[i] = _BLANK_TOKEN_ID
+
 
 class PhysicalTokenBlock:
     """Represents the state of a block in the KV cache."""

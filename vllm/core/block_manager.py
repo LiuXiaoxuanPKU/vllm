@@ -179,6 +179,15 @@ class BlockSpaceManager:
             self.gpu_allocator.free(last_block)
             return last_block.block_number, new_block.block_number
 
+    def free_tailing_blocks(self, seq: Sequence) -> None:
+        block_table = self.block_tables[seq.seq_id]
+        free_cnt = len(seq.logical_token_blocks) - len(block_table)
+        while free_cnt > 0:
+            block = block_table.pop()
+            self.gpu_allocator.free(block)
+            free_cnt -= 1
+        self.block_tables[seq.seq_id] = block_table
+
     def fork(self, parent_seq: Sequence, child_seq: Sequence) -> None:
         # NOTE: fork does not allocate a new physical block.
         # Thus, it is always safe from OOM.

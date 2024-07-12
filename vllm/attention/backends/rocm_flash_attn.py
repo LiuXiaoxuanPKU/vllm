@@ -223,19 +223,21 @@ class ROCmFlashAttentionImpl(AttentionImpl):
     padding between prefill and decode tokens.
     """
 
-    def __init__(
-        self,
-        num_heads: int,
-        head_size: int,
-        scale: float,
-        num_kv_heads: int,
-        alibi_slopes: Optional[List[float]],
-        sliding_window: Optional[int],
-        kv_cache_dtype: str,
-        blocksparse_params: Optional[Dict[str, Any]] = None,
-    ) -> None:
+    def __init__(self,
+                 num_heads: int,
+                 head_size: int,
+                 scale: float,
+                 num_kv_heads: int,
+                 alibi_slopes: Optional[List[float]],
+                 sliding_window: Optional[int],
+                 kv_cache_dtype: str,
+                 blocksparse_params: Optional[Dict[str, Any]] = None,
+                 logits_soft_cap: Optional[float] = None) -> None:
         assert blocksparse_params is None, ValueError(
             "ROCFlashAttention does not support blocksparse attention.")
+        assert logits_soft_cap is None, ValueError(
+            "Please use Flashinfer/Flashattention backend"
+            " for models with logits_soft_cap (e.g., Gemma-2).")
         self.num_heads = num_heads
         self.head_size = head_size
         self.scale = float(scale)

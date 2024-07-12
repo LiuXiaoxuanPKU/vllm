@@ -220,6 +220,7 @@ class FlashAttentionImpl(AttentionImpl):
         sliding_window: Optional[int],
         kv_cache_dtype: str,
         blocksparse_params: Optional[Dict[str, Any]] = None,
+        logits_soft_cap: Optional[float] = None,
     ) -> None:
         assert blocksparse_params is None, ValueError(
             "FlashAttention does not support block-sparse attention.")
@@ -248,6 +249,10 @@ class FlashAttentionImpl(AttentionImpl):
             raise ValueError(
                 f"Head size {head_size} is not supported by FlashAttention. "
                 f"Supported head sizes are: {support_head_sizes}.")
+
+        if logits_soft_cap is None:
+            logits_soft_cap = 0.0  # 0.0 means deactivated
+        self.logits_soft_cap = logits_soft_cap
 
     def forward(
         self,
@@ -329,6 +334,7 @@ class FlashAttentionImpl(AttentionImpl):
                     causal=True,
                     window_size=self.sliding_window,
                     alibi_slopes=self.alibi_slopes,
+                    softcap=self.logits_soft_cap,
                 )
                 assert output[:num_prefill_tokens].shape == out.shape
                 output[:num_prefill_tokens] = out
@@ -348,6 +354,7 @@ class FlashAttentionImpl(AttentionImpl):
                     causal=True,
                     alibi_slopes=self.alibi_slopes,
                     block_table=prefill_meta.block_tables,
+                    softcap=self.logits_soft_cap,
                 )
 
         if decode_meta := attn_metadata.decode_metadata:
@@ -361,7 +368,7 @@ class FlashAttentionImpl(AttentionImpl):
                 softmax_scale=self.scale,
                 causal=True,
                 alibi_slopes=self.alibi_slopes,
-            ).squeeze(1)
+                softcap=self.logits_soft_cap).squeeze(1)
 
         # Reshape the output tensor.
         return output.view(num_tokens, hidden_size)

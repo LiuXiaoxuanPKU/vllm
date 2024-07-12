@@ -685,13 +685,6 @@ class GPUModelRunnerBase(ModelRunnerBase[TModelInputForGPU]):
 
         logits_soft_cap = getattr(self.model_config.hf_config,
                                   'attn_logit_softcapping', None)
-        if logits_soft_cap is not None and self.attn_backend.get_name(
-        ) != "flashinfer":
-            raise ValueError("Please use Flashinfer backend for models with"
-                             "logits_soft_cap (i.e., Gemma-2)."
-                             " Otherwise, the output might be wrong."
-                             " Set Flashinfer backend by "
-                             "export VLLM_ATTENTION_BACKEND=FLASHINFER.")
 
         if self.attn_backend.get_name() == "flashinfer":
             if len(paged_kv_indptr) > 0:
@@ -749,7 +742,7 @@ class GPUModelRunnerBase(ModelRunnerBase[TModelInputForGPU]):
                 context_lens_tensor=context_lens_tensor,
                 block_tables=block_tables,
                 use_cuda_graph=use_captured_graph,
-            )
+                logits_soft_cap=logits_soft_cap,)
 
         if self.lora_config:
             lora_mapping = LoRAMapping(

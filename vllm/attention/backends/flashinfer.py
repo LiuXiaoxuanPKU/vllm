@@ -102,8 +102,6 @@ class FlashInferMetadata(AttentionMetadata):
     # The data type of the paged kv cache
     data_type: torch.dtype = None
     device: torch.device = torch.device("cuda")
-    # Only used by gemma2 model
-    logits_soft_cap: Optional[float] = None
 
     def __post_init__(self):
         # Refer to
@@ -200,6 +198,7 @@ class FlashInferImpl(AttentionImpl):
         sliding_window: Optional[int],
         kv_cache_dtype: str,
         blocksparse_params: Optional[Dict[str, Any]] = None,
+        logits_soft_cap: Optional[Dict[str, Any]] = None,
     ) -> None:
         self.num_heads = num_heads
         self.head_size = head_size
@@ -210,11 +209,14 @@ class FlashInferImpl(AttentionImpl):
         self.alibi_slopes = alibi_slopes
         if sliding_window is not None:
             raise ValueError("Sliding window is not supported in FlashInfer.")
+        if blocksparse_params is not None:
+            raise ValueError("blocksparse_params is not supported in FlashInfer.")
         self.sliding_window = (-1, -1)
         self.kv_cache_dtype = kv_cache_dtype
 
         assert self.num_heads % self.num_kv_heads == 0
         self.num_queries_per_kv = self.num_heads // self.num_kv_heads
+        self.logits_soft_cap = logits_soft_cap
 
     def forward(
         self,
@@ -276,7 +278,7 @@ class FlashInferImpl(AttentionImpl):
                 output = prefill_meta.prefill_wrapper.forward(
                     query,
                     kv_cache,
-                    logits_soft_cap=attn_metadata.logits_soft_cap,
+                    logits_soft_cap=self.logits_soft_cap,
                     causal=True)
         else:
             assert attn_metadata.decode_metadata is not None
@@ -285,5 +287,5 @@ class FlashInferImpl(AttentionImpl):
                 query,
                 kv_cache,
                 sm_scale=self.scale,
-                logits_soft_cap=attn_metadata.logits_soft_cap)
+                logits_soft_cap=self.logits_soft_cap)
         return output.view(num_tokens, hidden_size)

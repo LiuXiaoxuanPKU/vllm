@@ -66,6 +66,20 @@ class DSD:
         self.target_overhead_model = self._fit_2d_latency_models(
             FitDataType.Overhead, self.target_overhead_map)
 
+        # When batch size is big, use predicted data to avoid profiling inaccuracy
+        for seq_len in self.target_times_map:
+            for batch_size in self.target_times_map[seq_len]:
+                if batch_size < 32:
+                    continue
+                for k in self.target_times_map[seq_len][batch_size]:
+                    feature = np.array([
+                        batch_size,
+                        self._get_num_batched_tokens(batch_size, k),
+                        self._get_num_kv_tokens(batch_size, seq_len)
+                    ]).reshape(1, -1)
+                    self.target_times_map[seq_len][batch_size][
+                        k] = self.target_model.predict(feature)[0]
+                    
         self.step = 0
         self.last_proposed_len = 0
         self.last_verify_len = 0

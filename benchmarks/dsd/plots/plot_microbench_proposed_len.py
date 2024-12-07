@@ -1,55 +1,111 @@
 import json
 import matplotlib.pyplot as plt
+import seaborn as sns
+import numpy as np
+import matplotlib
 
-tracedir = "benchmarks/dsd/trace/"
+# Set style configurations
+# plt.style.use('seaborn')
+matplotlib.rcParams['font.size'] = 18
 
+# Modern color palette
+COLORS = {
+    0.5: '#2196F3',  # Blue
+    0.7: '#FF9800',  # Orange
+    0.9: '#4CAF50'   # Green
+}
+
+MARKERS = {
+    0.5: 'o',  # Circle
+    0.7: 's',  # Square
+    0.9: '^'   # Triangle
+}
 
 def load(filename):
+    """Load trace data from JSON file."""
     with open(filename, "r") as f:
         data = json.load(f)
     return data['traces']
 
-
 def load_all(acc, input_len, max_k, all_batch_sizes):
+    """Load all trace data for different batch sizes."""
     data = {}
     for batch_size in all_batch_sizes:
         data[batch_size] = load(
-            tracedir +
-            f"input={input_len}_{batch_size}_{acc}_True_k={max_k}.json")
+            f"{tracedir}input={input_len}_{batch_size}_{acc}_True_k={max_k}.json")
     return data
 
-
 def get_avg_proposed_len(data):
-    proposed_lens = []
-    for trace in data:
-        if trace['type'] == 'Request':
-            continue
-        if 'proposed_len' not in trace:
-            continue
-        proposed_lens.append(trace['proposed_len'])
-    avg_proposed_len = sum(proposed_lens) / (len(proposed_lens) + 1e-5)
-    return avg_proposed_len
+    """Calculate average proposed length from trace data."""
+    proposed_lens = [trace['proposed_len'] for trace in data 
+                    if trace['type'] != 'Request' and 'proposed_len' in trace]
+    return sum(proposed_lens) / (len(proposed_lens) + 1e-5)
 
-
-if __name__ == "__main__":
-    all_batch_sizes = [1, 2, 4, 8, 16, 32, 64, 128]
+def create_proposed_length_plot():
+    """Create enhanced plot with internal legend."""
+    all_batch_sizes = [1, 4, 8, 16, 32, 64]
+    x_positions = np.arange(len(all_batch_sizes))
     acc_rates = [0.5, 0.7, 0.9]
     input_len = 256
-    max_k = 7
-    plt.figure(figsize=(3, 2.6))
+    max_k = 8
+
+    # Create figure
+    plt.figure(figsize=(7, 5), dpi=300)
+    ax = plt.gca()
+
+    # Plot data
     for acc in acc_rates:
         data = load_all(acc, input_len, max_k, all_batch_sizes)
-        proposed_lens = []
-        for batch_size in all_batch_sizes:
-            proposed_lens.append(get_avg_proposed_len(data[batch_size]))
-        plt.plot(all_batch_sizes, proposed_lens, marker='o', label=f"{acc}")
+        proposed_lens = [get_avg_proposed_len(data[batch_size]) 
+                        for batch_size in all_batch_sizes]
+        
+        plt.plot(x_positions, proposed_lens, 
+                marker=MARKERS[acc], 
+                color=COLORS[acc],
+                label=f"acc={acc}",
+                linewidth=3,
+                markersize=12,
+                markeredgecolor='black',
+                markeredgewidth=2)
 
-    plt.xscale("log", base=2)
-    plt.gca().xaxis.set_major_formatter(plt.ScalarFormatter())
-    plt.gca().xaxis.set_major_locator(plt.FixedLocator(all_batch_sizes))
-    plt.xlabel("Batch size", fontsize=12)
-    plt.ylabel("Avg proposed length", fontsize=12)
-    plt.grid(axis='y')
-    plt.legend(bbox_to_anchor=(0.5, 1.15), loc='center', ncol=3)
-    plt.tight_layout(pad=0.1, w_pad=0.1, h_pad=0.1)
-    plt.savefig("benchmarks/dsd/figures/h100_proposed_len.pdf")
+    # X-axis styling
+    ax.set_xticks(x_positions)
+    ax.set_xticklabels(all_batch_sizes, fontsize=20, fontweight='bold')
+    
+    # Labels
+    plt.xlabel("Batch Size", fontsize=24, fontweight='bold', labelpad=10)
+    plt.ylabel("Average Proposed Length", fontsize=20, fontweight='bold', labelpad=10)
+    
+    # Y-axis ticks
+    plt.yticks(fontsize=20, fontweight='bold')
+
+    # Grid styling
+    plt.grid(True, linestyle='--', alpha=0.3)
+    ax.set_axisbelow(True)
+
+    # Legend inside the figure
+    plt.legend(loc='upper right',  # Position in upper right
+              fontsize=20,
+              framealpha=0.9,      # Slight transparency
+              edgecolor='black',   # Black edge
+              frameon=True,
+              borderpad=0.8,       # Padding inside legend border
+              handletextpad=0.5)   # Space between handle and text
+
+    # Tighter y-axis limits
+    ymin, ymax = plt.ylim()
+    plt.ylim(0, ymax * 1.05)
+
+    # Adjust layout
+    plt.tight_layout(pad=0.2)
+
+    # Save figure
+    plt.savefig("benchmarks/dsd/figures/h100_proposed_len.pdf",
+                bbox_inches='tight',
+                dpi=300,
+                pad_inches=0.1)
+    plt.close()
+
+if __name__ == "__main__":
+    tracedir = "benchmarks/dsd/trace/"
+    create_proposed_length_plot()

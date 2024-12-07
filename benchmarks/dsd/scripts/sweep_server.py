@@ -138,9 +138,9 @@ class BenchEngine:
             cmd = "VLLM_USE_FLASHINFER_SAMPLER=1 " + cmd
             cmd += f" --speculative-model {setting.speculative_model}"
             cmd += " --use-v2-block-manager"
+            cmd += " --force-mqa"
         else:
-            pass
-            # cmd += " --enforce-eager"
+            cmd += " --enforce-eager"
         if setting.num_speculative_tokens >= 0:
             cmd += f" --num-speculative-tokens {setting.num_speculative_tokens}"
         if setting.speculative_draft_tensor_parallel_size > 0:
@@ -244,13 +244,17 @@ class BenchEngine:
 
 def main(args):
     device = torch.cuda.get_device_name(0).replace(" ", "_")
-    request_rates = list(parse_tuple(
-        args.request_rate_params))
+    request_rates = list(parse_tuple(args.request_rate_params))
 
     runs = []
     # All * 10 to generate non-integer request rates
     bench_setting = None
-    tp = 4 if "70" in args.model else 1
+    if '70' in args.model:
+        tp = 4
+    elif '33' in args.model or '34' in args.model:
+        tp = 2
+    else:
+        tp = 1
 
     if args.speculative_model and "7B" not in args.speculative_model:
         speculative_draft_tensor_parallel_size = 1

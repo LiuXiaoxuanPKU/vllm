@@ -41,6 +41,48 @@ def get_avg_proposed_len(data):
                     if trace['type'] != 'Request' and 'proposed_len' in trace]
     return sum(proposed_lens) / (len(proposed_lens) + 1e-5)
 
+def create_legend_figure():
+    """Create a separate figure for just the legend."""
+    # Create figure for legend
+    figlegend = plt.figure(figsize=(10, 0.5))
+    ax = figlegend.add_subplot(111)
+    
+    # Create dummy lines for legend
+    lines = []
+    labels = []
+    
+    # Add entries for each acceptance rate
+    for acc in [0.5, 0.7, 0.9]:
+        # Create a line with marker for the legend
+        line = plt.Line2D([0], [0],
+                         color=COLORS[acc],
+                         marker=MARKERS[acc],
+                         markersize=12,
+                         linewidth=3,
+                         markeredgecolor='black',
+                         markeredgewidth=2,
+                         label=f'acc={acc}')
+        lines.append(line)
+        labels.append(f'acc={acc}')
+    
+    # Create the legend
+    ax.legend(lines, labels,
+             loc='center',
+             ncol=3,
+             fontsize=20,
+             frameon=True,
+             borderaxespad=0)
+    
+    # Turn off axis
+    ax.set_axis_off()
+    
+    # Save legend figure
+    plt.savefig('benchmarks/dsd/figures/proposed_len_legend.pdf',
+                bbox_inches='tight',
+                dpi=300,
+                pad_inches=0.1)
+    plt.close()
+    
 def create_proposed_length_plot():
     """Create enhanced plot with internal legend."""
     all_batch_sizes = [1, 4, 8, 16, 32, 64]
@@ -50,7 +92,7 @@ def create_proposed_length_plot():
     max_k = 8
 
     # Create figure
-    plt.figure(figsize=(7, 5), dpi=300)
+    plt.figure(figsize=(5, 3), dpi=300)
     ax = plt.gca()
 
     # Plot data
@@ -64,33 +106,35 @@ def create_proposed_length_plot():
                 color=COLORS[acc],
                 label=f"acc={acc}",
                 linewidth=3,
-                markersize=12,
+                markersize=14,
                 markeredgecolor='black',
                 markeredgewidth=2)
 
     # X-axis styling
     ax.set_xticks(x_positions)
-    ax.set_xticklabels(all_batch_sizes, fontsize=20, fontweight='bold')
+    ax.set_xticklabels(all_batch_sizes, fontsize=14, fontweight='bold')
     
     # Labels
-    plt.xlabel("Batch Size", fontsize=24, fontweight='bold', labelpad=10)
-    plt.ylabel("Average Proposed Length", fontsize=20, fontweight='bold', labelpad=10)
+    plt.xlabel("Batch Size", fontsize=14, fontweight='bold', labelpad=10)
+    plt.ylabel("Average Proposed Len", fontsize=14, fontweight='bold', labelpad=10)
     
     # Y-axis ticks
-    plt.yticks(fontsize=20, fontweight='bold')
+    plt.yticks(fontsize=14, fontweight='bold')
 
     # Grid styling
     plt.grid(True, linestyle='--', alpha=0.3)
     ax.set_axisbelow(True)
 
-    # Legend inside the figure
-    plt.legend(loc='upper right',  # Position in upper right
-              fontsize=20,
-              framealpha=0.9,      # Slight transparency
-              edgecolor='black',   # Black edge
-              frameon=True,
-              borderpad=0.8,       # Padding inside legend border
-              handletextpad=0.5)   # Space between handle and text
+    # # Legend inside the figure
+    # plt.legend(
+    #           ncol=3,             # 3 columns
+    #           bbox_to_anchor=(0.5, 1.05), loc='center',  # Anchor to upper right corner
+    #           fontsize=20,
+    #           framealpha=0.9,      # Slight transparency
+    #           edgecolor='black',   # Black edge
+    #           frameon=True,
+    #           borderpad=0.8,       # Padding inside legend border
+    #           handletextpad=0.5)   # Space between handle and text
 
     # Tighter y-axis limits
     ymin, ymax = plt.ylim()
@@ -109,3 +153,4 @@ def create_proposed_length_plot():
 if __name__ == "__main__":
     tracedir = "benchmarks/dsd/trace/"
     create_proposed_length_plot()
+    create_legend_figure()

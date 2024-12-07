@@ -2,8 +2,8 @@ from vllm import LLM, SamplingParams
 import time
 # Sample prompts.
 batch_size = 128
-output_len = 128
-input_len = 1024
+output_len = 256
+input_len = 256
 # target_model = "meta-llama/Meta-Llama-3-8B-Instruct"
 # draft_model = "turboderp/Qwama-0.5B-Instruct"
 target_model = "lmsys/vicuna-7b-v1.5"
@@ -17,7 +17,8 @@ sampling_params = SamplingParams(temperature=0,
                                  max_tokens=output_len,
                                  ignore_eos=True)
 
-max_num_seqs = 100
+# L40s 3394 blocks
+max_num_seqs = int(0.9 * 3394 * 16 / (input_len + output_len))
 gpu_memory_utilization = 0.9
 
 # Create an LLM.
@@ -40,9 +41,9 @@ with open("benchmarks/dsd/offline/result", "a") as f:
         "batch_size, input_len, output_len, acc_rate, num_spec_token, org_time, org_tpt, batch_expansion_time, batch_expansion_tpt, mqa_time, mqa_tpt\n"
     )
 
-for num_speculative_tokens in [7, 9]:
+for num_speculative_tokens in [1,3,5,7]:
     for acc_rate in [0.7, 0.8, 0.9]:
-        # Batch Expansion
+        # With Batch Expansion
         llm = LLM(model=target_model,
                   speculative_model=draft_model,
                   max_num_seqs=max_num_seqs - 5,
@@ -59,7 +60,7 @@ for num_speculative_tokens in [7, 9]:
         batch_expansion_tpt = batch_size * output_len / batch_expansion_time
         del llm
 
-        # Batch Expansion
+        # Without Batch Expansion
         llm = LLM(model=target_model,
                   speculative_model=draft_model,
                   max_num_seqs=max_num_seqs - 5,
@@ -85,7 +86,8 @@ for num_speculative_tokens in [7, 9]:
         )
         print(f"MQA time: {mqa_time:.2f}s, Throughput: {mqa_tpt:.2f} tokens/s")
 
+        
         with open("benchmarks/dsd/offline/result", "a") as f:
             f.write(
-                f"{batch_size}, {input_len}, {acc_rate}, {num_speculative_tokens}, {output_len}, {org_time}, {org_tpt}, {batch_expansion_time}, {batch_expansion_tpt}, {mqa_time}, {mqa_tpt}\n"
+                f"{batch_size}, {input_len}, {output_len}, {acc_rate}, {num_speculative_tokens}, {org_time}, {org_tpt}, {batch_expansion_time}, {batch_expansion_tpt}, {mqa_time}, {mqa_tpt}\n"
             )

@@ -86,34 +86,38 @@ class DSD:
         self.last_draft_time = 0
         self.last_target_time = 0
 
-        self.updte_interval = 20
+        self.update_interval = 20
+        
+        self.ngram_verify_lens = []
 
     def _should_update(self):
+        update = self.step % self.update_interval == 0
         self.step += 1
-        return self.step > 0 and self.step % self.updte_interval == 0
+        return update
 
     def _predict_goodput(
         self,
         batch: ExecuteModelRequest,
         k: int,
-        proposal_lens: Optional[torch.Tensor] = None
+        propose_cnt: Optional[int] = None
     ) -> Tuple[float, float, float]:
         if not self.is_ngram:
             accepted_len = self._get_accepted_len(batch, k, None)
             batch_time, draft_time, target_time = self._get_batch_proposal_verify_time(
                 batch, k)
         else:
-            propose_cnt = len(batch.seq_group_metadata_list
-                              ) if proposal_lens is None else sum(
-                                  proposal_lens > 0)
             accepted_len = self._get_accepted_len(batch, k, propose_cnt)
             batch_time, draft_time, target_time = self._get_batch_verify_time(
                 batch, k, propose_cnt)
+        if batch_time == 10000: # OOM
+            accepted_len, draft_time, target_time = -1, -1, -1
         # print("propose len: ", k, f"accepted len: {accepted_len:.2f} ",
         #       f"batch time: {batch_time:.4f} ",
-        #       f"batch size: {len(batch.seq_group_metadata_list)} ",
-        #       f"Goodput: {accepted_len / batch_time:.2f}", "draft time: ",
-        #       draft_time, "target time: ", target_time)
+        #       f"acceptance rate: {self.token_acceptance_rate} ",
+        #       f"batch size: {propose_cnt} / {len(batch.seq_group_metadata_list)} ",
+        #       f"Goodput: {accepted_len / batch_time:.2f} ", 
+        #       f"draft time: {draft_time:.5f}, ",
+        #       f"target time: {target_time:.5f}")
         return accepted_len / batch_time, draft_time, target_time
 
     def _get_accepted_len(self, batch: ExecuteModelRequest, k: int,
@@ -173,17 +177,15 @@ class DSD:
         batch_latencies = times_map[seq_len]
 
         if self.is_ngram and num_proposal_reqs is not None:
-            k = num_proposal_reqs * k // batch_size
-            if isinstance(k, torch.Tensor):
-                k = k.item()
-
-        if batch_size in batch_latencies and k in batch_latencies[batch_size]:
-            return batch_latencies[batch_size][k]
+            assert datatype == FitDataType.Target
+        else:
+            if batch_size in batch_latencies and k in batch_latencies[batch_size]:
+                return batch_latencies[batch_size][k]
 
         if datatype == FitDataType.Target:
             features = [
                 batch_size,
-                self._get_num_batched_tokens(batch_size, k),
+                self._get_num_batched_tokens(batch_size, k, num_proposal_reqs),
                 self._get_num_kv_tokens(batch_size, seq_len)
             ]
         elif datatype == FitDataType.Draft:
@@ -271,11 +273,21 @@ class DSD:
 
     def get_ngram_propose_len(
             self, batch: ExecuteModelRequest) -> Tuple[int, float, float]:
-        batch_size = len(batch.seq_group_metadata_list)
-
-        if batch_size > 32:
-            return 0, -1, -1
-        return 8, -1, -1
+        proposal_len = 0
+        
+        # Turn proposing off if previous k steps always have 0 proposal/verification
+        if len(self.ngram_verify_lens) > 2 * self.update_interval and sum(self.ngram_verify_lens[-2 * self.update_interval:]) == 0:
+            proposal_len = 0
+        else:
+            proposal_len = 8 # hardcode max proposal len to 8 
+        if proposal_len == 0:
+            self.ngram_verify_lens.append(0)
+            
+        # Reset the ngram_verify_lens every 5 * self.update_interval steps
+        if len(self.ngram_verify_lens) > 5 * self.update_interval and sum(self.ngram_verify_lens[-5 * self.update_interval:]) == 0:
+            self.ngram_verify_lens = []
+            
+        return proposal_len, -1, -1
 
     def get_draft_propose_len(
             self, batch: ExecuteModelRequest) -> Tuple[int, float, float]:
@@ -285,12 +297,15 @@ class DSD:
         min_proposal_len = 0
         max_proposal_len = batch.num_lookahead_slots
         max_goodput = -1.0
-        best_proposal_len = -1
+        best_proposal_len = 0
         best_draft_time = -1
         best_target_time = -1
         for i in range(min_proposal_len, max_proposal_len + 1):
             cur_goodput, draft_time, target_time = self._predict_goodput(
                 batch, i, None)
+            if cur_goodput < 0: # OOM
+                break
+            
             if i == 0:
                 # We take a conservative approach for the first proposal
                 # the goodput should be at least 1.1x of non spec decode
@@ -330,25 +345,28 @@ class DSD:
                 0], self.last_draft_time, self.last_target_time
 
         if not self._should_update():
+            self.ngram_verify_lens.append(self.last_verify_len)
             return self.last_verify_len, self.last_draft_time, self.last_target_time
 
-        # Update match ratio
-        match_ratio = (proposal.proposal_lens > 0).sum() / len(
-            proposal.proposal_lens)
-        self.match_ratio = self.match_ratio * 0.85 + 0.15 * match_ratio
-
+        # # Update match ratio
+        # match_ratio = (proposal.proposal_lens > 0).sum() / len(
+        #     proposal.proposal_lens)
+        # self.match_ratio = self.match_ratio * 0.85 + 0.15 * match_ratio
+        propose_cnt = len(batch.seq_group_metadata_list
+                              ) if proposal.proposal_lens is None else sum(
+                                  proposal.proposal_lens > 0).item()
+        if propose_cnt == 0:
+            return 0, -1, -1
+        
         max_proposal_len = proposal.proposal_lens[0]
         max_goodput = -1.0
         best_verify_len = 0
         best_draft_time = -1
         best_target_time = -1
-
-        if torch.all(proposal.proposal_lens == 0):
-            return max_proposal_len, -1, -1
-
+        max_proposal_len = 7
         for i in range(max_proposal_len + 1):
             cur_goodput, draft_time, target_time = self._predict_goodput(
-                batch, i, proposal.proposal_lens)
+                batch, i, propose_cnt)
             # print(f"Goodput for proposal len {i}: {cur_goodput}")
             if cur_goodput > max_goodput:
                 max_goodput = cur_goodput
@@ -357,13 +375,14 @@ class DSD:
                 best_target_time = target_time
             else:
                 break
-
         self.last_verify_len = best_verify_len
         self.last_draft_time = best_draft_time
         self.last_target_time = best_target_time
         # logger.info("==Best verify len: %f, %d, %d",
         #             self.token_acceptance_rate, best_verify_len,
         #             max_proposal_len)
+        self.ngram_verify_lens.append(best_verify_len)
+        
         return best_verify_len, best_draft_time, best_target_time
 
     def modify_proposals(self, proposal: SpeculativeProposals,
@@ -384,7 +403,9 @@ class DSD:
             # logger.info("[DSD] Set token acceptance rate to %f",
             #             self.token_acceptance_rate)
 
-    def _get_num_batched_tokens(self, batch_size: int, k: int):
+    def _get_num_batched_tokens(self, batch_size: int, k: int, num_proposal_reqs: Optional[int] = None):
+        if num_proposal_reqs:
+            return num_proposal_reqs * (k + 1) + batch_size - num_proposal_reqs
         return batch_size * (k + 1)
 
     def _get_num_kv_tokens(self, batch_size: int, seq_len: int):

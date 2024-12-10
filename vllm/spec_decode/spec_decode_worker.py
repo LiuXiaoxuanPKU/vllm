@@ -324,6 +324,7 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
         self.dummy_match = dummy_match
         self.use_dsd = use_dsd
         self.sd_step = 0
+        self.disable_step = 0
         if self.use_dsd:
             logger.info("[Speculative Decoding] DSD is enabled.")
 
@@ -557,6 +558,13 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
             self, execute_model_req: ExecuteModelRequest) -> bool:
         # When the batch size is too large, disable speculative decoding
         # to stop trading off throughput for latency.
+        if self.disable_by_batch_size and execute_model_req.running_queue_size >= self.disable_by_batch_size:
+            # print("Disable all speculation, running queue size:", execute_model_req.running_queue_size, self.disable_by_batch_size)
+            self.disable_step += 1
+        # Reset disable_step every 40 steps to avoid completely disabling spec decode
+        if self.disable_step % 100 == 0:
+            self.disable_by_batch_size = float("inf")
+            self.disable_step = 0
         return (execute_model_req.running_queue_size >=
                 self.disable_by_batch_size)
 
@@ -785,6 +793,7 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
             for seq_group_metadata \
                 in execute_model_req.seq_group_metadata_list:
                 seq_group_metadata.num_speculative_tokens = 0
+            self.disable_by_batch_size = execute_model_req.running_queue_size
             return self._run_no_spec(execute_model_req, skip_proposer=True)
 
         with Timer(profile_time) as proposal_timer:
@@ -1264,7 +1273,7 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
 
     def profile_worker(self, num_gpu_blocks):
         import time
-        seq_lens = [1, 128, 256, 512, 768, 1024, 1280, 1536, 1792, 2048]
+        seq_lens = [128, 256, 512, 768, 1024, 1280, 1536, 1792, 2048]
         batch_sizes = [1, 2, 4, 8, 16, 32, 48, 64, 80, 96, 112, 128]
         repeat = 10
         draft_times_map = {}

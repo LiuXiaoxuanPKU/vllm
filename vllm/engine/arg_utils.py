@@ -1471,13 +1471,13 @@ class EngineArgs:
         is_eagle_enabled = False
         if self.speculative_config is not None:
             # This is supported but experimental (handled below).
-            if  (self.speculative_config.get(
-                "method", "") in ["ngram", "[ngram]"] or 
-                self.speculative_config.get("model", "") in ["ngram", "[ngram]"]):
+            if (self.speculative_config.get("method", "")
+                    in ["ngram", "[ngram]"] or self.speculative_config.get(
+                        "model", "") in ["ngram", "[ngram]"]):
                 is_ngram_enabled = True
             elif "eagle-" in self.speculative_config.get("model", "").lower():
                 is_eagle_enabled = True
-                
+
             if not (is_ngram_enabled or is_eagle_enabled):
                 # Other speculative decoding methods are not supported yet.
                 _raise_or_fallback(feature_name="Speculative Decoding",

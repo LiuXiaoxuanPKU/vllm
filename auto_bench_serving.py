@@ -96,19 +96,21 @@ for model, dataset, dataset_path, \
                   f"--dataset-name {dataset} " \
                   f"--dataset-path {dataset_path} " \
                   f"--request-rate {request_rate} " \
-                  f"--num-prompts 1000 " 
+                  f"--num-prompts 500 " 
                 #   f"--speculative-config '{spec_config}'"
     
     print(g_str("Running client command: ") + client_cmd)
     client = subprocess.Popen(client_cmd, shell=True, 
-                              stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                              stdout=sys.stdout, stderr=sys.stderr)
     print(g_str("Client is running with PID: ") + str(client.pid))
     # Wait for the client to finish
     try:
-        stdout, stderr = client.communicate(timeout=300)
-    except subprocess.TimeoutExpired:
-        client.kill()
+        print(g_str("Waiting for client to finish..."))
         stdout, stderr = client.communicate()
+    except subprocess.TimeoutExpired:
+        print(r_str("Client timed out. Terminating..."))
+        client.kill()
+        # stdout, stderr = client.communicate()
     print(g_str("Client finished."))
     # Capture the client logs
     print(g_str("Client logs:"), stdout.decode())

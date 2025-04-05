@@ -474,7 +474,12 @@ class SonnetDataset(BenchmarkDataset):
         num_input_lines = round((input_len - base_offset) / avg_len)
         num_prefix_lines = round((prefix_len - base_offset) / avg_len)
         prefix_lines = self.data[:num_prefix_lines]
-
+        print(f"num_input_lines: {num_input_lines}, "
+              f"num_prefix_lines: {num_prefix_lines}, "
+              f"base_offset: {base_offset}, "
+              f"avg_len: {avg_len}, "
+              f"input_len: {input_len}, "
+              f"output_len: {output_len}")
         samples = []
         for _ in range(num_requests):
             extra_lines = random.choices(self.data,
@@ -491,6 +496,7 @@ class SonnetDataset(BenchmarkDataset):
                     prompt_len=prompt_len,
                     expected_output_len=output_len,
                 ))
+            print (f"Request {_}, Extra lines: \n\t{extra_lines}")
         return samples
 
 

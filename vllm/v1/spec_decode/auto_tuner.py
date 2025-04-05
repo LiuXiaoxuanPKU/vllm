@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 from vllm.v1.worker.gpu_input_batch import CachedRequestState
-
+import torch
+import os
 
 class AutoTuner:
 
@@ -75,7 +76,7 @@ class AutoTuner:
         draft_token_ids = [draft[:verified_len] for draft in draft_token_ids]
         return draft_token_ids
 
-    def update_stats(self, acceptance_rate: float):
+    def update_stats(self, acceptance_rate: torch.tensor):
         self.step_cnt += 1
         if self.step_cnt % 20 == 0:
             print(
@@ -88,6 +89,13 @@ class AutoTuner:
             )
 
         self.past_acceptance_rates.append(acceptance_rate)
+        # print (self.past_acceptance_rates)
+        acceptance_export_path = "acceptance_rate_tmp.pt"
+        # if self.step_cnt % 1 == 0:
+        #     print(f"\033[91mSaving acceptance rate to\033[0m {acceptance_export_path}, "
+        #           f"step {self.step_cnt}, list length {len(self.past_acceptance_rates)}")
+        torch.save(self.past_acceptance_rates, acceptance_export_path)
+        
 
     @property
     def acceptance_rate(self):

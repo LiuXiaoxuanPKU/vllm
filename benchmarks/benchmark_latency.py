@@ -23,6 +23,15 @@ from vllm.inputs import TextPrompt, TokensPrompt
 from vllm.sampling_params import BeamSearchParams
 from vllm.utils import FlexibleArgumentParser
 
+def r_str(s):
+    return "\033[91m" + str(s) + "\033[0m"
+def g_str(s):
+    return "\033[92m" + str(s) + "\033[0m"
+def y_str(s):
+    return "\033[93m" + str(s) + "\033[0m"
+def b_str(s):
+    return "\033[94m" + str(s) + "\033[0m"
+
 
 def save_to_pytorch_benchmark_format(args: argparse.Namespace,
                                      results: dict[str, Any]) -> None:
@@ -34,7 +43,41 @@ def save_to_pytorch_benchmark_format(args: argparse.Namespace,
     if pt_records:
         pt_file = f"{os.path.splitext(args.output_json)[0]}.pytorch.json"
         write_to_json(pt_file, pt_records)
-
+        
+first_execution_of_collect_acceptance_rates = True
+pre_acceptance_rate_len = 0
+def collect_acceptance_rates():
+    acceptance_export_path = "acceptance_rate_tmp.pt"
+    acceptance_list_export_path = "acceptance_rates_per_req.pt"
+    global first_execution_of_collect_acceptance_rates
+    global pre_acceptance_rate_len
+    if os.path.exists(acceptance_export_path):
+        acceptance_rates = torch.load(acceptance_export_path)
+    else:
+        acceptance_rates = []
+    print(y_str("Found acceptance rate file of length ") + 
+          f"{len(acceptance_rates)}, " +
+          y_str("previous acceptance rate file length ") +
+          f"{pre_acceptance_rate_len} ")
+    if os.path.exists(acceptance_list_export_path) and \
+         not first_execution_of_collect_acceptance_rates:
+        acceptance_list = torch.load(acceptance_list_export_path)
+    else:
+        acceptance_list = []
+        first_execution_of_collect_acceptance_rates = False
+    new_pre_acceptance_rate_len = len(acceptance_rates)
+    acceptance_rates_torch = acceptance_rates[pre_acceptance_rate_len:]
+    acceptance_rates = [acceptance_rates_torch[i].item() \
+        for i in range(len(acceptance_rates_torch))]
+    pre_acceptance_rate_len = new_pre_acceptance_rate_len
+    acceptance_list.append(acceptance_rates)
+    print(b_str("Saving acceptance rate list of length ") +
+          f"{len(acceptance_list)} " +
+          b_str("to ") +
+          f"{acceptance_list_export_path}, " +
+          b_str("appended new req of length ") +
+          f"{len(acceptance_list[-1])} ")
+    torch.save(acceptance_list, acceptance_list_export_path)
 
 def main(args: argparse.Namespace):
     print(args)
@@ -72,19 +115,46 @@ def main(args: argparse.Namespace):
                        multi_modal_data=request.multi_modal_data))
 
     def llm_generate():
-        if not args.use_beam_search:
-            llm.generate(prompts,
-                         sampling_params=sampling_params,
-                         use_tqdm=False)
+        if(args.iterate_requests):
+            # Iterate through the requests in the dataset
+            print (b_str("Iterating through the requests in the dataset"))
+            for prompt in prompts:
+                if not args.use_beam_search:
+                    outputs = llm.generate(
+                        prompt,
+                        sampling_params=sampling_params,
+                        use_tqdm=False,
+                    )
+                else:
+                    outputs = llm.beam_search(
+                        prompt,
+                        BeamSearchParams(
+                            beam_width=args.n,
+                            max_tokens=args.output_len,
+                            ignore_eos=True,
+                        ),
+                    )
+                # for output in outputs:
+                #     for text_output in output.outputs:
+                #         gen_text = text_output.text
+                #         print(y_str("\tPrompt: ") + f"{output.prompt!r}\n"
+                #             + y_str("\tResponse: ") + f"{gen_text!r}")
+                collect_acceptance_rates()
+                
         else:
-            llm.beam_search(
-                prompts,
-                BeamSearchParams(
-                    beam_width=args.n,
-                    max_tokens=args.output_len,
-                    ignore_eos=True,
-                ),
-            )
+            if not args.use_beam_search:
+                llm.generate(prompts,
+                            sampling_params=sampling_params,
+                            use_tqdm=False)
+            else:
+                llm.beam_search(
+                    prompts,
+                    BeamSearchParams(
+                        beam_width=args.n,
+                        max_tokens=args.output_len,
+                        ignore_eos=True,
+                    ),
+                )
 
     def run_to_completion(profile_dir: Optional[str] = None):
         if profile_dir:
@@ -195,6 +265,12 @@ if __name__ == "__main__":
         choices=["sharegpt", "random", "sonnet", "burstgpt", "hf"],
         help="Name of the dataset to benchmark on.",
         default="sharegpt")
+    parser.add_argument(
+        "--iterate-requests",
+        action="store_false",
+        help="Iterate through the requests in the dataset instead of "
+        "batching them.",
+    )
     # random dataset
     parser.add_argument(
         "--random-range-ratio",

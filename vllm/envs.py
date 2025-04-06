@@ -106,6 +106,7 @@ if TYPE_CHECKING:
     VLLM_TPU_DISABLE_TOPK_TOPP_OPTIMIZATION: bool = False
     VLLM_TPU_BUCKET_PADDING_GAP: int = 0
     VLLM_USE_DEEP_GEMM: bool = False
+    EXPORT_AUTO_TUNER: bool = False
 
 
 def get_default_cache_root():
@@ -692,6 +693,10 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # Allow use of DeepGemm kernels for fused moe ops.
     "VLLM_USE_DEEP_GEMM":
     lambda: bool(int(os.getenv("VLLM_USE_DEEP_GEMM", "0"))),
+    
+    # If set, vllm will export the auto-tuner results to a file
+    "EXPORT_AUTO_TUNER":
+    lambda: bool(int(os.getenv("EXPORT_AUTO_TUNER", "0"))),
 }
 
 # end-env-vars-definition

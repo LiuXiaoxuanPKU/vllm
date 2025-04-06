@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 from vllm.v1.worker.gpu_input_batch import CachedRequestState
 from vllm.distributed import get_tensor_model_parallel_rank
+from vllm import envs
 import torch
 import os
 
@@ -90,12 +91,13 @@ class AutoTuner:
                     "Global match ratio:",
                     f"{self.match_cnt / (self.total_cnt + 1e-5):.2f}",
                 )
-            # print (self.past_acceptance_rates)
-            acceptance_export_path = "acceptance_rate_tmp.pt"
-            # if self.step_cnt % 1 == 0:
-            #     print(f"\033[91mSaving acceptance rate to\033[0m {acceptance_export_path}, "
-            #           f"step {self.step_cnt}, list length {len(self.past_acceptance_rates)}")
-            torch.save(self.past_acceptance_rates, acceptance_export_path)
+            if envs.EXPORT_AUTO_TUNER:
+                # print (self.past_acceptance_rates)
+                acceptance_export_path = "acceptance_rate_tmp.pt"
+                # if self.step_cnt % 1 == 0:
+                #     print(f"\033[91mSaving acceptance rate to\033[0m {acceptance_export_path}, "
+                #           f"step {self.step_cnt}, list length {len(self.past_acceptance_rates)}")
+                torch.save(self.past_acceptance_rates, acceptance_export_path)
             
 
     @property

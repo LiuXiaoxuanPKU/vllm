@@ -18,9 +18,9 @@ def b_str(s):
     return "\033[94m" + str(s) + "\033[0m"
 
 tp_model_list = [
-    [4, "meta-llama/Meta-Llama-3.1-70B-Instruct"],
-    [2, "Qwen/Qwen2.5-32B-Instruct"], 
-    [1, "meta-llama/Meta-Llama-3.1-8B-Instruct"], 
+    # [4, "meta-llama/Meta-Llama-3.1-70B-Instruct"],
+    # [2, "Qwen/Qwen2.5-32B-Instruct"], 
+    # [1, "meta-llama/Meta-Llama-3.1-8B-Instruct"], 
     [1, "Qwen/Qwen2.5-3B-Instruct"],
 ]
 dataset_datapath_list = [
@@ -39,7 +39,7 @@ spec_config_list = [
     }
     """
 ]
-batch_size = 128
+batch_size = 4
 output_len_list = [256]
 acceptance_export_path = "acceptance_rate_tmp.pt"
 acceptance_list_export_path = "acceptance_rates_per_req.pt"
@@ -54,8 +54,9 @@ for tp_model, dataset_datapath, spec_config, output_len in \
     tp, model = tp_model
     dataset, datapath = dataset_datapath
     # Run the benchmark script
-    benchmark_cmd = f"VLLM_USE_V1=1 python3 benchmarks/benchmark_latency.py "\
-        f"--enforce-eager --iterate-requests --num-iters-warmup 0 --num-iters 1 "\
+    benchmark_cmd = f"VLLM_USE_V1=1 EXPORT_AUTO_TUNER=1 "\
+        f"python3 benchmarks/benchmark_latency.py --enforce-eager "\
+        f"--iterate-requests --num-iters-warmup 0 --num-iters 1 "\
         f"--output-len {output_len} "\
         f"--tensor-parallel-size {tp} "\
         f"--batch-size {batch_size} "\
@@ -83,8 +84,12 @@ for tp_model, dataset_datapath, spec_config, output_len in \
         acceptance_rates_list = torch.load(acceptance_list_export_path)
         acceptance_rates_per_req = {req_idx: acceptance_rate
             for req_idx, acceptance_rate in enumerate(acceptance_rates_list)}
-        random_num = str(int(time.time()))[-8:]
-        output_path = f"accept_rate_dist_{random_num}.json"
+        time_str = str(int(time.time()))[-8:]
+        random_num = str(random.randint(1000, 9999))
+        output_path = f"accept_rate_dist_{time_str}_{random_num}.json"
+        while os.path.exists(output_path):
+            random_num = str(random.randint(1000, 9999))
+            output_path = f"accept_rate_dist_{time_str}_{random_num}.json"
     json_data = {
         "model": model,
         "dataset": dataset,

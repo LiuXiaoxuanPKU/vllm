@@ -7,7 +7,8 @@ import os
 import warnings
 from typing import Any
 
-from benchmark_dataset import (BurstGPTDataset, ConversationDataset,
+from benchmark_dataset import (AIMODataset, BurstGPTDataset,
+                               ConversationDataset, HuggingFaceDataset,
                                InstructCoderDataset, RandomDataset,
                                SampleRequest, ShareGPTDataset, SonnetDataset,
                                VisionArenaDataset)
@@ -119,6 +120,9 @@ def get_requests(num_requests: int, args: argparse.Namespace,
         elif args.dataset_path in InstructCoderDataset.SUPPORTED_DATASET_PATHS:
             dataset_cls = InstructCoderDataset
             common_kwargs['dataset_split'] = "train"
+        elif args.dataset_path in AIMODataset.SUPPORTED_DATASET_PATHS:
+            dataset_cls = AIMODataset
+            common_kwargs['dataset_split'] = "train"
         elif args.dataset_path in ConversationDataset.SUPPORTED_DATASET_PATHS:
             dataset_cls = ConversationDataset
             common_kwargs['dataset_subset'] = args.hf_subset
@@ -166,6 +170,8 @@ def validate_dataset(args: argparse.Namespace, ):
             assert getattr(
                 args, 'backend', None
             ) and args.backend == "vllm-chat", "ConversationDataset needs to use vllm-chat as the backend."  #noqa: E501
+        elif args.dataset_path in AIMODataset.SUPPORTED_DATASET_PATHS:
+            pass
         else:
             raise ValueError(
                 f"{args.dataset_path} is not supported by hf dataset.")

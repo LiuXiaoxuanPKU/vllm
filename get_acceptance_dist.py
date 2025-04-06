@@ -18,10 +18,12 @@ def b_str(s):
     return "\033[94m" + str(s) + "\033[0m"
 
 tp_model_list = [
-    # [4, "meta-llama/Meta-Llama-3.1-70B-Instruct"],
-    # [2, "Qwen/Qwen2.5-32B-Instruct"], 
+    [4, "meta-llama/Meta-Llama-3.1-70B-Instruct"],
+    [2, "Qwen/Qwen2.5-32B-Instruct"], 
     [1, "meta-llama/Meta-Llama-3.1-8B-Instruct"], 
-    # [1, "Qwen/Qwen2.5-7B-Instruct"],
+    [1, "Qwen/Qwen2.5-7B-Instruct"],
+    [1, "meta-llama/Llama-3.2-3B-Instruct"], 
+    [1, "Qwen/Qwen2.5-1.5B-Instruct"],
 ]
 dataset_datapath_list = [
     ["sonnet", "/data/js_park/vllm_dsd/benchmarks/sonnet.txt"],
@@ -40,6 +42,7 @@ spec_config_list = [
     """
 ]
 batch_size = 4
+output_len_list = [256]
 acceptance_export_path = "acceptance_rate_tmp.pt"
 acceptance_list_export_path = "acceptance_rates_per_req.pt"
 
@@ -48,13 +51,14 @@ if os.path.exists(acceptance_export_path):
 if os.path.exists(acceptance_list_export_path):
     os.remove(acceptance_list_export_path)
 
-for tp_model, dataset_datapath, spec_config in \
-    product(tp_model_list, dataset_datapath_list, spec_config_list):
+for tp_model, dataset_datapath, spec_config, output_len in \
+    product(tp_model_list, dataset_datapath_list, spec_config_list, output_len_list):
     tp, model = tp_model
     dataset, datapath = dataset_datapath
     # Run the benchmark script
     benchmark_cmd = f"VLLM_USE_V1=1 python3 benchmarks/benchmark_latency.py "\
         f"--enforce-eager --iterate-requests --num-iters-warmup 0 --num-iters 1 "\
+        f"--output-len {output_len} "\
         f"--tensor-parallel-size {tp} "\
         f"--batch-size {batch_size} "\
         f"--model {model} "\
@@ -92,10 +96,10 @@ for tp_model, dataset_datapath, spec_config in \
         "dataset_path": datapath,
         "batch_size": batch_size,
         "spec_config": spec_config,
+        "output_len": output_len,
         "benchmark_success": benchmark_success,
         "acceptance_rates_per_req": acceptance_rates_per_req,
     }
-    print (json_data)
     # Save the JSON data to a file
     with open(output_path, 'w') as json_file:
         json.dump(json_data, json_file, indent=4)

@@ -3,8 +3,10 @@ import sys
 
 from vllm import LLM, SamplingParams
 
-tp_val = int(sys.argv[1])
-load_format = sys.argv[2]
+model_path = sys.argv[1]
+tp_val = int(sys.argv[2])
+# load_format = sys.argv[3]
+
 prompts = [
     "How do I write merge sort functions in C++, Python, and X86 Assembly? Give me a line-by-line explanation of each implementation.",
 ]
@@ -18,7 +20,7 @@ sampling_params = SamplingParams(n=1,
 # model_path = "ai21labs/Jamba-v0.1"
 # model_path = "deepseek-ai/deepseek-moe-16b-chat"
 # model_path = "deepseek-ai/DeepSeek-V2.5-1210"
-model_path = "deepseek-ai/DeepSeek-V2-Lite-Chat"
+# model_path = "deepseek-ai/DeepSeek-V2-Lite-Chat"
 # model_path = "mistralai/Mixtral-8x7B-Instruct-v0.1"
 # model_path = "meta-llama/Llama-3.1-8B"
 
@@ -28,8 +30,8 @@ llm = LLM(model=model_path,
           tensor_parallel_size=tp_val,
           enforce_eager=True,
           max_num_batched_tokens=4096,
-          max_num_seqs=1024,
-          load_format=load_format)
+          max_num_seqs=1024,)
+        #   load_format=load_format)
 
 outputs = llm.generate(prompts, sampling_params)
 

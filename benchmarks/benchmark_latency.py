@@ -55,10 +55,10 @@ def collect_acceptance_rates():
         acceptance_rates = torch.load(acceptance_export_path)
     else:
         acceptance_rates = []
-    print(y_str("Found acceptance rate file of length ") + 
-          f"{len(acceptance_rates)}, " +
-          y_str("previous acceptance rate file length ") +
-          f"{pre_acceptance_rate_len} ")
+    # print(y_str("Found acceptance rate file of length ") + 
+    #       f"{len(acceptance_rates)}, " +
+    #       y_str("previous acceptance rate file length ") +
+    #       f"{pre_acceptance_rate_len} ")
     if os.path.exists(acceptance_list_export_path) and \
          not first_execution_of_collect_acceptance_rates:
         acceptance_list = torch.load(acceptance_list_export_path)
@@ -117,7 +117,7 @@ def main(args: argparse.Namespace):
     def llm_generate():
         if(args.iterate_requests):
             # Iterate through the requests in the dataset
-            print (b_str("Iterating through the requests in the dataset"))
+            print (y_str("Iterating through the requests in the dataset"))
             for prompt in prompts:
                 if not args.use_beam_search:
                     outputs = llm.generate(
@@ -134,11 +134,11 @@ def main(args: argparse.Namespace):
                             ignore_eos=True,
                         ),
                     )
-                # for output in outputs:
-                #     for text_output in output.outputs:
-                #         gen_text = text_output.text
-                #         print(y_str("\tPrompt: ") + f"{output.prompt!r}\n"
-                #             + y_str("\tResponse: ") + f"{gen_text!r}")
+                for output in outputs:
+                    for text_output in output.outputs:
+                        gen_text = text_output.text
+                        print(y_str("\tPrompt: ") + f"{output.prompt!r}\n"
+                            + y_str("\tResponse: ") + f"{gen_text!r}")
                 collect_acceptance_rates()
                 
         else:
@@ -267,7 +267,7 @@ if __name__ == "__main__":
         default="sharegpt")
     parser.add_argument(
         "--iterate-requests",
-        action="store_false",
+        action="store_true",
         help="Iterate through the requests in the dataset instead of "
         "batching them.",
     )

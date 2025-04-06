@@ -1,7 +1,7 @@
 import os
 import sys
 import time
-import requests
+from itertools import product
 import subprocess
 import signal
 import random
@@ -17,11 +17,18 @@ def y_str(s):
 def b_str(s):
     return "\033[94m" + str(s) + "\033[0m"
 
-model_list = ["meta-llama/Meta-Llama-3-8B-Instruct"]
-dataset_list = ["sharegpt"]
-dataset_path_list = ["/data/js_park/vllm_dsd/ShareGPT_V3_unfiltered_cleaned_split.json"]
-# dataset_list = ["sonnet"]
-# dataset_path_list = ["/data/js_park/vllm_dsd/benchmarks/sonnet.txt"]
+tp_model_list = [
+    # [4, "meta-llama/Meta-Llama-3.1-70B-Instruct"],
+    # [2, "Qwen/Qwen2.5-32B-Instruct"], 
+    [1, "meta-llama/Meta-Llama-3.1-8B-Instruct"], 
+    # [1, "Qwen/Qwen2.5-7B-Instruct"],
+]
+dataset_datapath_list = [
+    ["sonnet", "/data/js_park/vllm_dsd/benchmarks/sonnet.txt"],
+    ["sharegpt", "/data/js_park/vllm_dsd/ShareGPT_V3_unfiltered_cleaned_split.json"],
+    ["hf", "likaixin/InstructCoder"],
+    ["hf", "AI-MO/aimo-validation-aime"],
+]
 spec_config_list = [
     """
     {
@@ -32,7 +39,7 @@ spec_config_list = [
     }
     """
 ]
-batch_size = 512
+batch_size = 4
 acceptance_export_path = "acceptance_rate_tmp.pt"
 acceptance_list_export_path = "acceptance_rates_per_req.pt"
 
@@ -41,18 +48,20 @@ if os.path.exists(acceptance_export_path):
 if os.path.exists(acceptance_list_export_path):
     os.remove(acceptance_list_export_path)
 
-for model, dataset, dataset_path, spec_config in \
-    zip(model_list, dataset_list, dataset_path_list, spec_config_list):
+for tp_model, dataset_datapath, spec_config in \
+    product(tp_model_list, dataset_datapath_list, spec_config_list):
+    tp, model = tp_model
+    dataset, datapath = dataset_datapath
     # Run the benchmark script
     benchmark_cmd = f"VLLM_USE_V1=1 python3 benchmarks/benchmark_latency.py "\
-        f"--enforce-eager --num-iters-warmup 0 --num-iters 1 "\
+        f"--enforce-eager --iterate-requests --num-iters-warmup 0 --num-iters 1 "\
+        f"--tensor-parallel-size {tp} "\
         f"--batch-size {batch_size} "\
         f"--model {model} "\
         f"--dataset-name {dataset} "\
-        f"--dataset-path {dataset_path} "\
+        f"--dataset-path {datapath} "\
         f"--speculative-config '{spec_config}' "\
 
-     
     print(g_str("Running command: ") + benchmark_cmd)
     bench = subprocess.Popen(benchmark_cmd, shell=True, 
                               stdout=sys.stdout, stderr=sys.stderr,
@@ -63,18 +72,27 @@ for model, dataset, dataset_path, spec_config in \
     # Wait for the benchmark to finish
     stdout, stderr = bench.communicate()
     print(g_str("Benchmark finished"))
-    
-    acceptance_rates_list = torch.load(acceptance_list_export_path)
-    acceptance_rates_per_req = {req_idx: acceptance_rate
-        for req_idx, acceptance_rate in enumerate(acceptance_rates_list)}
-    random_num = str(random.randint(100000, 999999))
-    output_path = f"accept_rate_dist_{random_num}.json"
+    benchmark_success = (bench.returncode == 0)
+    if not os.path.exists(acceptance_export_path):
+        print(r_str("Acceptance rate file not found!"))
+        acceptance_rates_per_req = {}
+        benchmark_success = False
+    else:
+        acceptance_rates_list = torch.load(acceptance_list_export_path)
+        acceptance_rates_per_req = {req_idx: acceptance_rate
+            for req_idx, acceptance_rate in enumerate(acceptance_rates_list)}
+        random_num = str(random.randint(100000, 999999))
+        output_path = f"accept_rate_dist_{random_num}.json"
+        while os.path.exists(output_path):
+            random_num = str(random.randint(100000, 999999))
+            output_path = f"accept_rate_dist_{random_num}.json"
     json_data = {
         "model": model,
         "dataset": dataset,
-        "dataset_path": dataset_path,
+        "dataset_path": datapath,
         "batch_size": batch_size,
         "spec_config": spec_config,
+        "benchmark_success": benchmark_success,
         "acceptance_rates_per_req": acceptance_rates_per_req,
     }
     print (json_data)

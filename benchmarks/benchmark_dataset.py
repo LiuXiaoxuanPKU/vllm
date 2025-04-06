@@ -453,13 +453,16 @@ class SonnetDataset(BenchmarkDataset):
         return_prompt_formatted: bool = False,
         **kwargs,
     ) -> list:
+        if input_len < 200:
+            input_len = 200
         # Calculate average token length for a poem line.
         tokenized_lines = [tokenizer(line).input_ids for line in self.data]
         avg_len = sum(len(tokens)
                       for tokens in tokenized_lines) / len(tokenized_lines)
 
         # Build the base prompt.
-        base_prompt = "Pick as many lines as you can from these poem lines:\n"
+        base_prompt = "Randomly pick as many lines as you want from these poem"\
+                      " lines to create a new poem:\n"
         base_msg = [{"role": "user", "content": base_prompt}]
         base_fmt = tokenizer.apply_chat_template(base_msg,
                                                  add_generation_prompt=True,
@@ -474,12 +477,12 @@ class SonnetDataset(BenchmarkDataset):
         num_input_lines = round((input_len - base_offset) / avg_len)
         num_prefix_lines = round((prefix_len - base_offset) / avg_len)
         prefix_lines = self.data[:num_prefix_lines]
-        print(f"num_input_lines: {num_input_lines}, "
-              f"num_prefix_lines: {num_prefix_lines}, "
-              f"base_offset: {base_offset}, "
-              f"avg_len: {avg_len}, "
-              f"input_len: {input_len}, "
-              f"output_len: {output_len}")
+        # print(f"num_input_lines: {num_input_lines}, "
+        #       f"num_prefix_lines: {num_prefix_lines}, "
+        #       f"base_offset: {base_offset}, "
+        #       f"avg_len: {avg_len}, "
+        #       f"input_len: {input_len}, "
+        #       f"output_len: {output_len}")
         samples = []
         for _ in range(num_requests):
             extra_lines = random.choices(self.data,
@@ -496,7 +499,7 @@ class SonnetDataset(BenchmarkDataset):
                     prompt_len=prompt_len,
                     expected_output_len=output_len,
                 ))
-            print (f"Request {_}, Extra lines: \n\t{extra_lines}")
+            # print (f"Request {_}, Extra lines: \n\t{extra_lines}")
         return samples
 
 

@@ -137,8 +137,8 @@ def main(args: argparse.Namespace):
                 for output in outputs:
                     for text_output in output.outputs:
                         gen_text = text_output.text
-                        print(y_str("\tPrompt: ") + f"{output.prompt!r}\n"
-                            + y_str("\tResponse: ") + f"{gen_text!r}")
+                        # print(y_str("\tPrompt: ") + f"{output.prompt!r}\n"
+                        #     + y_str("\tResponse: ") + f"{gen_text!r}")
                 collect_acceptance_rates()
                 
         else:

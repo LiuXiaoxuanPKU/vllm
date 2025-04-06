@@ -21,9 +21,7 @@ tp_model_list = [
     [4, "meta-llama/Meta-Llama-3.1-70B-Instruct"],
     [2, "Qwen/Qwen2.5-32B-Instruct"], 
     [1, "meta-llama/Meta-Llama-3.1-8B-Instruct"], 
-    [1, "Qwen/Qwen2.5-7B-Instruct"],
-    [1, "meta-llama/Llama-3.2-3B-Instruct"], 
-    [1, "Qwen/Qwen2.5-1.5B-Instruct"],
+    [1, "Qwen/Qwen2.5-3B-Instruct"],
 ]
 dataset_datapath_list = [
     ["sonnet", "/data/js_park/vllm_dsd/benchmarks/sonnet.txt"],
@@ -41,7 +39,7 @@ spec_config_list = [
     }
     """
 ]
-batch_size = 4
+batch_size = 128
 output_len_list = [256]
 acceptance_export_path = "acceptance_rate_tmp.pt"
 acceptance_list_export_path = "acceptance_rates_per_req.pt"
@@ -85,11 +83,8 @@ for tp_model, dataset_datapath, spec_config, output_len in \
         acceptance_rates_list = torch.load(acceptance_list_export_path)
         acceptance_rates_per_req = {req_idx: acceptance_rate
             for req_idx, acceptance_rate in enumerate(acceptance_rates_list)}
-        random_num = str(random.randint(100000, 999999))
+        random_num = str(int(time.time()))[-8:]
         output_path = f"accept_rate_dist_{random_num}.json"
-        while os.path.exists(output_path):
-            random_num = str(random.randint(100000, 999999))
-            output_path = f"accept_rate_dist_{random_num}.json"
     json_data = {
         "model": model,
         "dataset": dataset,

@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 from vllm.v1.worker.gpu_input_batch import CachedRequestState
+from vllm.distributed import get_tensor_model_parallel_rank
 import torch
 import os
 
@@ -78,24 +79,24 @@ class AutoTuner:
 
     def update_stats(self, acceptance_rate: torch.tensor):
         self.step_cnt += 1
-        if self.step_cnt % 20 == 0:
-            print(
-                f"Step {self.step_cnt}: "
-                f"Last acceptance rate: {acceptance_rate:.2f}",
-                f"Last match ratio: {self.past_match_ratios[-1]:.2f}",
-                f"Global acceptance rate: {self.acceptance_rate:.2f}",
-                "Global match ratio:",
-                f"{self.match_cnt / (self.total_cnt + 1e-5):.2f}",
-            )
-
         self.past_acceptance_rates.append(acceptance_rate)
-        # print (self.past_acceptance_rates)
-        acceptance_export_path = "acceptance_rate_tmp.pt"
-        # if self.step_cnt % 1 == 0:
-        #     print(f"\033[91mSaving acceptance rate to\033[0m {acceptance_export_path}, "
-        #           f"step {self.step_cnt}, list length {len(self.past_acceptance_rates)}")
-        torch.save(self.past_acceptance_rates, acceptance_export_path)
-        
+        if get_tensor_model_parallel_rank() == 0:
+            if self.step_cnt % 20 == 0:
+                print(
+                    f"Step {self.step_cnt}: "
+                    f"Last acceptance rate: {acceptance_rate:.2f}",
+                    f"Last match ratio: {self.past_match_ratios[-1]:.2f}",
+                    f"Global acceptance rate: {self.acceptance_rate:.2f}",
+                    "Global match ratio:",
+                    f"{self.match_cnt / (self.total_cnt + 1e-5):.2f}",
+                )
+            # print (self.past_acceptance_rates)
+            acceptance_export_path = "acceptance_rate_tmp.pt"
+            # if self.step_cnt % 1 == 0:
+            #     print(f"\033[91mSaving acceptance rate to\033[0m {acceptance_export_path}, "
+            #           f"step {self.step_cnt}, list length {len(self.past_acceptance_rates)}")
+            torch.save(self.past_acceptance_rates, acceptance_export_path)
+            
 
     @property
     def acceptance_rate(self):

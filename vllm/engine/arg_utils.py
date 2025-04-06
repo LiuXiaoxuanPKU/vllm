@@ -1275,6 +1275,10 @@ class EngineArgs:
             self.model_loader_extra_config[
                 "qlora_adapter_name_or_path"] = self.qlora_adapter_name_or_path
 
+        # bitsandbytes pre-quantized model need a specific model loader
+        if model_config.quantization == "bitsandbytes":
+            self.quantization = self.load_format = "bitsandbytes"
+
         load_config = self.create_load_config()
 
         prompt_adapter_config = PromptAdapterConfig(
@@ -1468,15 +1472,21 @@ class EngineArgs:
 
         # Only Ngram speculative decoding so far.
         is_ngram_enabled = False
+        is_eagle_enabled = False
         if self.speculative_config is not None:
             # This is supported but experimental (handled below).
-            if (("method" in self.speculative_config
-                 and self.speculative_config["method"] in ("ngram", "[ngram]"))
-                    or
-                ("model" in self.speculative_config and
-                 self.speculative_config["model"] in ("ngram", "[ngram]"))):
-                is_ngram_enabled = True
+            speculative_method = self.speculative_config.get("method")
+            if speculative_method:
+                if speculative_method in ("ngram", "[ngram]"):
+                    is_ngram_enabled = True
+                elif speculative_method == "eagle":
+                    is_eagle_enabled = True
             else:
+                speculative_model = self.speculative_config.get("model")
+                if speculative_model in ("ngram", "[ngram]"):
+                    is_ngram_enabled = True
+            if not (is_ngram_enabled or is_eagle_enabled):
+                # Other speculative decoding methods are not supported yet.
                 _raise_or_fallback(feature_name="Speculative Decoding",
                                    recommend_to_remove=False)
                 return False
@@ -1512,25 +1522,26 @@ class EngineArgs:
                 and _warn_or_fallback("Engine in background thread")):
             return False
 
-        # LoRA is supported on V1, but off by default for now.
-        if self.enable_lora and _warn_or_fallback("LORA"):
-            return False
-
         # PP is supported on V1 with Ray distributed executor,
         # but off for MP distributed executor for now.
         if (self.pipeline_parallel_size > 1
-                and self.distributed_executor_backend == "mp"
-                and _warn_or_fallback("PP (MP distributed executor)")):
+                and self.distributed_executor_backend != "ray"):
+            name = "Pipeline Parallelism without Ray distributed executor"
+            _raise_or_fallback(feature_name=name, recommend_to_remove=False)
             return False
 
         # ngram is supported on V1, but off by default for now.
         if is_ngram_enabled and _warn_or_fallback("ngram"):
             return False
 
+        # Eagle is under development, so we don't support it yet.
+        if is_eagle_enabled and _warn_or_fallback("Eagle"):
+            return False
+
         # Non-CUDA is supported on V1, but off by default for now.
         not_cuda = not current_platform.is_cuda()
         if not_cuda and _warn_or_fallback(  # noqa: SIM103
-                current_platform.device_type):
+                current_platform.device_name):
             return False
         #############################################################
 

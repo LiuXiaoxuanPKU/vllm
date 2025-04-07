@@ -18,16 +18,17 @@ def b_str(s):
     return "\033[94m" + str(s) + "\033[0m"
 
 tp_model_list = [
-    # [4, "meta-llama/Meta-Llama-3.1-70B-Instruct"],
-    # [2, "Qwen/Qwen2.5-32B-Instruct"], 
-    # [1, "meta-llama/Meta-Llama-3.1-8B-Instruct"], 
+    [4, "meta-llama/Meta-Llama-3.1-70B-Instruct"],
+    [2, "Qwen/Qwen2.5-32B-Instruct"], 
+    [2, "Qwen/QwQ-32B"], 
+    [1, "meta-llama/Meta-Llama-3.1-8B-Instruct"], 
     [1, "Qwen/Qwen2.5-3B-Instruct"],
 ]
 dataset_datapath_list = [
+    ["hf", "AI-MO/aimo-validation-aime"],
     ["sonnet", "/data/js_park/vllm_dsd/benchmarks/sonnet.txt"],
     ["sharegpt", "/data/js_park/vllm_dsd/ShareGPT_V3_unfiltered_cleaned_split.json"],
     ["hf", "likaixin/InstructCoder"],
-    ["hf", "AI-MO/aimo-validation-aime"],
 ]
 spec_config_list = [
     """
@@ -37,9 +38,25 @@ spec_config_list = [
         "prompt_lookup_min": 3,
         "num_speculative_tokens": 3
     }
+    """,
+    """
+    {
+        "model": "ngram",
+        "prompt_lookup_max": 7,
+        "prompt_lookup_min": 3,
+        "num_speculative_tokens": 4
+    }
+    """,
+    """
+    {
+        "model": "ngram",
+        "prompt_lookup_max": 7,
+        "prompt_lookup_min": 3,
+        "num_speculative_tokens": 5
+    }
     """
 ]
-batch_size = 4
+batch_size = 256
 output_len_list = [256]
 acceptance_export_path = "acceptance_rate_tmp.pt"
 acceptance_list_export_path = "acceptance_rates_per_req.pt"

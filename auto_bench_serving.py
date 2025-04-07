@@ -4,6 +4,7 @@ import time
 import requests
 import subprocess
 import signal
+from itertools import product
 import random
 
 def r_str(s):
@@ -18,7 +19,7 @@ def b_str(s):
 def check_server_status(base_port):
     """Check if the server is running."""
     server_ready = False
-    max_attempts = 60
+    max_attempts = 150
     attempt = 0
     while not server_ready and attempt < max_attempts:
         try:
@@ -41,10 +42,19 @@ def check_server_status(base_port):
         
     return server_ready
 
-model_list = ["meta-llama/Meta-Llama-3-8B-Instruct"]
-dataset_list = ["sonnet"]
-dataset_path_list = ["/data/js_park/vllm_dsd/benchmarks/sonnet.txt"]
-request_rate_list = [4]
+tp_model_list = [
+    # [4, "meta-llama/Meta-Llama-3.1-70B-Instruct"],
+    # [2, "Qwen/Qwen2.5-32B-Instruct"], 
+    # [2, "Qwen/QwQ-32B"], 
+    [1, "meta-llama/Meta-Llama-3.1-8B-Instruct"], 
+    [1, "Qwen/Qwen2.5-3B-Instruct"],
+]
+dataset_datapath_list = [
+    ["hf", "AI-MO/aimo-validation-aime"],
+    ["sonnet", "/data/js_park/vllm_dsd/benchmarks/sonnet.txt"],
+    # ["sharegpt", "/data/js_park/vllm_dsd/ShareGPT_V3_unfiltered_cleaned_split.json"],
+    # ["hf", "likaixin/InstructCoder"],
+]
 spec_config_list = [
     """
     {
@@ -53,30 +63,50 @@ spec_config_list = [
         "prompt_lookup_min": 3,
         "num_speculative_tokens": 3
     }
-    """
+    """,
+    # """
+    # {
+    #     "model": "ngram",
+    #     "prompt_lookup_max": 7,
+    #     "prompt_lookup_min": 3,
+    #     "num_speculative_tokens": 4
+    # }
+    # """,
+    # """
+    # {
+    #     "model": "ngram",
+    #     "prompt_lookup_max": 7,
+    #     "prompt_lookup_min": 3,
+    #     "num_speculative_tokens": 5
+    # }
+    # """
 ]
-base_port = random.randint(31111, 39999)
+req_rate_list = [4]
+acceptance_export_path = "acceptance_rate_tmp.pt"
+acceptance_list_export_path = "acceptance_rates_per_req.pt"
+output_to_stdio = True
 
-for model, dataset, dataset_path, \
-    request_rate, spec_config in \
-    zip(model_list, dataset_list, dataset_path_list, 
-        request_rate_list, spec_config_list):
-    test_conf_str = f"""
-    \tModel: {model}
-    \tDataset: {dataset}
-    \tDataset Path: {dataset_path}
-    \tRequest Rate: {request_rate}
-    \tSpeculative Config: {spec_config}
-    """
-    print(g_str("Running test with the following configuration:\n") +
-          test_conf_str)
+if os.path.exists(acceptance_export_path):
+    os.remove(acceptance_export_path)
+if os.path.exists(acceptance_list_export_path):
+    os.remove(acceptance_list_export_path)
+    
+base_port = random.randint(31000, 39000)
+
+for tp_model, spec_config in \
+    product(tp_model_list, spec_config_list):
+    base_port += 1
+    tp, model = tp_model
     test_success = 1
     # Run the benchmark vLLM server
     server_cmd = f"vllm serve {model} --swap-space 16 --disable-log-requests " \
-                  f"--port {base_port} "
+                  f"--port {base_port} --speculative-config '{spec_config}' "
     print(g_str("Running server command: ") + server_cmd)
+    server_stdout, server_stderr = subprocess.PIPE, subprocess.PIPE
+    if output_to_stdio:
+        server_stdout, server_stderr = sys.stdout, sys.stderr
     server = subprocess.Popen(server_cmd, shell=True, 
-                              stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              stdout=server_stdout, stderr=server_stderr,
                               preexec_fn=os.setsid)
     print(g_str("Server is running with PID: ") + str(server.pid))
     # Wait for the server to start
@@ -89,39 +119,46 @@ for model, dataset, dataset_path, \
         sys.exit(test_success)
     time.sleep(5)
     
-    # Run the benchmark client
-    client_cmd = f"python3 benchmarks/benchmark_serving.py " \
-                  f"--port {base_port} " \
-                  f"--model {model} " \
-                  f"--dataset-name {dataset} " \
-                  f"--dataset-path {dataset_path} " \
-                  f"--request-rate {request_rate} " \
-                  f"--num-prompts 500 " 
-                #   f"--speculative-config '{spec_config}'"
-    
-    print(g_str("Running client command: ") + client_cmd)
-    client = subprocess.Popen(client_cmd, shell=True, 
-                              stdout=sys.stdout, stderr=sys.stderr)
-    print(g_str("Client is running with PID: ") + str(client.pid))
-    # Wait for the client to finish
-    try:
-        print(g_str("Waiting for client to finish..."))
-        stdout, stderr = client.communicate()
-    except subprocess.TimeoutExpired:
-        print(r_str("Client timed out. Terminating..."))
-        client.kill()
-        # stdout, stderr = client.communicate()
-    print(g_str("Client finished."))
-    # Capture the client logs
-    print(g_str("Client logs:"), stdout.decode())
+    for data_datapath, req_rate in \
+        product(dataset_datapath_list, req_rate_list):
+        dataset, datapath = data_datapath
+        # Run the benchmark client
+        client_cmd = f"VLLM_USE_V1=1 " \
+                    f"python3 benchmarks/benchmark_serving.py " \
+                    f"--port {base_port} " \
+                    f"--model {model} " \
+                    f"--dataset-name {dataset} " \
+                    f"--dataset-path {datapath} " \
+                    f"--request-rate {req_rate} " \
+                    f"--num-prompts 10 " 
+                    #   f"--speculative-config '{spec_config}'"
+        client_stdout, client_stderr = subprocess.PIPE, subprocess.PIPE
+        if output_to_stdio:            
+            client_stdout, client_stderr = sys.stdout, sys.stderr
+        
+        print(g_str("Running client command: ") + client_cmd)
+        client = subprocess.Popen(client_cmd, shell=True, 
+                                stdout=client_stdout, stderr=client_stderr)
+        print(g_str("Client is running with PID: ") + str(client.pid))
+        # Wait for the client to finish
+        try:
+            stdout, stderr = client.communicate()
+        except subprocess.TimeoutExpired:
+            print(r_str("Client timed out. Terminating..."))
+            client.kill()
+            # stdout, stderr = client.communicate()
+        print(g_str("Client finished."))
+        if not output_to_stdio:
+            # Capture the client logs
+            client_logs = client.stdout.read()
+            print(g_str("Client logs:"), client_logs.decode())
+            
     # Terminate the server
     print(g_str("Terminating server..."))
     os.killpg(os.getpgid(server.pid), signal.SIGTERM)
     server.wait()
     print(g_str("Server terminated."))
-    # Capture the server logs
-    server_logs = server.stdout.read()
-    print(g_str("Server logs:"), server_logs.decode())
-
-    
-    
+    if not output_to_stdio:
+        # Capture the server logs
+        server_logs = server.stdout.read()
+        print(g_str("Server logs:"), server_logs.decode())

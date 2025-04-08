@@ -32,6 +32,8 @@ def y_str(s):
 def b_str(s):
     return "\033[94m" + str(s) + "\033[0m"
 
+dsd_stat_list_path = "dsd_stat_list.pt"
+dsd_stat_path = "dsd_stats.pt"
 
 def save_to_pytorch_benchmark_format(args: argparse.Namespace,
                                      results: dict[str, Any]) -> None:
@@ -44,41 +46,6 @@ def save_to_pytorch_benchmark_format(args: argparse.Namespace,
         pt_file = f"{os.path.splitext(args.output_json)[0]}.pytorch.json"
         write_to_json(pt_file, pt_records)
         
-first_execution_of_collect_acceptance_rates = True
-pre_acceptance_rate_len = 0
-def collect_acceptance_rates():
-    acceptance_export_path = "acceptance_rate_tmp.pt"
-    acceptance_list_export_path = "acceptance_rates_per_req.pt"
-    global first_execution_of_collect_acceptance_rates
-    global pre_acceptance_rate_len
-    if os.path.exists(acceptance_export_path):
-        acceptance_rates = torch.load(acceptance_export_path)
-    else:
-        acceptance_rates = []
-    # print(y_str("Found acceptance rate file of length ") + 
-    #       f"{len(acceptance_rates)}, " +
-    #       y_str("previous acceptance rate file length ") +
-    #       f"{pre_acceptance_rate_len} ")
-    if os.path.exists(acceptance_list_export_path) and \
-         not first_execution_of_collect_acceptance_rates:
-        acceptance_list = torch.load(acceptance_list_export_path)
-    else:
-        acceptance_list = []
-        first_execution_of_collect_acceptance_rates = False
-    new_pre_acceptance_rate_len = len(acceptance_rates)
-    acceptance_rates_torch = acceptance_rates[pre_acceptance_rate_len:]
-    acceptance_rates = [acceptance_rates_torch[i].item() \
-        for i in range(len(acceptance_rates_torch))]
-    pre_acceptance_rate_len = new_pre_acceptance_rate_len
-    acceptance_list.append(acceptance_rates)
-    print(b_str("Saving acceptance rate list of length ") +
-          f"{len(acceptance_list)} " +
-          b_str("to ") +
-          f"{acceptance_list_export_path}, " +
-          b_str("appended new req of length ") +
-          f"{len(acceptance_list[-1])} ")
-    torch.save(acceptance_list, acceptance_list_export_path)
-
 def main(args: argparse.Namespace):
     print(args)
 
@@ -90,7 +57,9 @@ def main(args: argparse.Namespace):
     assert llm.llm_engine.model_config.max_model_len >= (
         args.input_len +
         args.output_len), ("Please ensure that max_model_len is greater than"
-                           " the sum of input_len and output_len.")
+                           " the sum of input_len and output_len."
+                           f" max_model_len: {llm.llm_engine.model_config.max_model_len}, "
+                           f" input_len: {args.input_len}, output_len: {args.output_len}")
 
     sampling_params = SamplingParams(
         n=args.n,
@@ -113,11 +82,12 @@ def main(args: argparse.Namespace):
             if "prompt_token_ids" in request.prompt else \
             TextPrompt(prompt=request.prompt,
                        multi_modal_data=request.multi_modal_data))
-
     def llm_generate():
         if(args.iterate_requests):
             # Iterate through the requests in the dataset
             print (y_str("Iterating through the requests in the dataset"))
+            dsd_stat_list = []
+            torch.save(dsd_stat_list, dsd_stat_path)
             for prompt in prompts:
                 if not args.use_beam_search:
                     outputs = llm.generate(
@@ -139,7 +109,12 @@ def main(args: argparse.Namespace):
                         gen_text = text_output.text
                         # print(y_str("\tPrompt: ") + f"{output.prompt!r}\n"
                         #     + y_str("\tResponse: ") + f"{gen_text!r}")
-                collect_acceptance_rates()
+                
+                dsd_stat_list.append(torch.load(dsd_stat_path))
+                print(y_str("DSD stats collected."))
+                os.remove(dsd_stat_path)
+            torch.save(dsd_stat_list, dsd_stat_list_path)
+            print(g_str("DSD stats saved to ") + dsd_stat_list_path)
                 
         else:
             if not args.use_beam_search:

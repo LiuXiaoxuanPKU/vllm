@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 import sys
-
+import vllm
 from vllm import LLM, SamplingParams
 
 model_path = sys.argv[1]
@@ -39,3 +39,5 @@ for output in outputs:
     for text_output in output.outputs:
         generated_text = text_output.text
         print(f"Prompt: {prompt!r}, Generated text: {generated_text[:4096]!r}")
+
+print(vllm.__version__)

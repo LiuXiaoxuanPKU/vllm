@@ -99,8 +99,9 @@ for tp_model, spec_config in \
     tp, model = tp_model
     test_success = 1
     # Run the benchmark vLLM server
-    server_cmd = f"vllm serve {model} --swap-space 16 --disable-log-requests " \
-                  f"--port {base_port} --speculative-config '{spec_config}' "
+    server_cmd = f"VLLM_USE_V1=1 vllm serve {model} --swap-space 16 " \
+                 f"--disable-log-requests " \
+                 f"--port {base_port} --speculative-config '{spec_config}' "
     print(g_str("Running server command: ") + server_cmd)
     server_stdout, server_stderr = subprocess.PIPE, subprocess.PIPE
     if output_to_stdio:
@@ -152,6 +153,8 @@ for tp_model, spec_config in \
             # Capture the client logs
             client_logs = client.stdout.read()
             print(g_str("Client logs:"), client_logs.decode())
+        
+            
             
     # Terminate the server
     print(g_str("Terminating server..."))

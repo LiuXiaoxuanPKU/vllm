@@ -18,9 +18,9 @@ def b_str(s):
     return "\033[94m" + str(s) + "\033[0m"
 
 tp_model_list = [
-    [4, "meta-llama/Meta-Llama-3.1-70B-Instruct"],
-    [2, "Qwen/Qwen2.5-32B-Instruct"], 
-    [2, "Qwen/QwQ-32B"], 
+    # [4, "meta-llama/Meta-Llama-3.1-70B-Instruct"],
+    # [2, "Qwen/Qwen2.5-32B-Instruct"], 
+    # [2, "Qwen/QwQ-32B"], 
     [1, "meta-llama/Meta-Llama-3.1-8B-Instruct"], 
     [1, "Qwen/Qwen2.5-3B-Instruct"],
 ]
@@ -39,35 +39,35 @@ spec_config_list = [
         "num_speculative_tokens": 3
     }
     """,
-    """
-    {
-        "model": "ngram",
-        "prompt_lookup_max": 7,
-        "prompt_lookup_min": 3,
-        "num_speculative_tokens": 4
-    }
-    """,
-    """
-    {
-        "model": "ngram",
-        "prompt_lookup_max": 7,
-        "prompt_lookup_min": 3,
-        "num_speculative_tokens": 5
-    }
-    """
+    # """
+    # {
+    #     "model": "ngram",
+    #     "prompt_lookup_max": 7,
+    #     "prompt_lookup_min": 3,
+    #     "num_speculative_tokens": 4
+    # }
+    # """,
+    # """
+    # {
+    #     "model": "ngram",
+    #     "prompt_lookup_max": 7,
+    #     "prompt_lookup_min": 3,
+    #     "num_speculative_tokens": 5
+    # }
+    # """
 ]
-batch_size = 256
+batch_size = 4
 output_len_list = [256]
-acceptance_export_path = "acceptance_rate_tmp.pt"
-acceptance_list_export_path = "acceptance_rates_per_req.pt"
-
-if os.path.exists(acceptance_export_path):
-    os.remove(acceptance_export_path)
-if os.path.exists(acceptance_list_export_path):
-    os.remove(acceptance_list_export_path)
+dsd_stat_path = "dsd_stats.pt"
+dsd_stat_list_path = "dsd_stat_list.pt"
 
 for tp_model, dataset_datapath, spec_config, output_len in \
     product(tp_model_list, dataset_datapath_list, spec_config_list, output_len_list):
+    if os.path.exists(dsd_stat_path):
+        os.remove(dsd_stat_path)
+    if os.path.exists(dsd_stat_list_path):
+        os.remove(dsd_stat_list_path)
+        
     tp, model = tp_model
     dataset, datapath = dataset_datapath
     # Run the benchmark script
@@ -93,21 +93,19 @@ for tp_model, dataset_datapath, spec_config, output_len in \
     stdout, stderr = bench.communicate()
     print(g_str("Benchmark finished"))
     benchmark_success = (bench.returncode == 0)
-    if not os.path.exists(acceptance_export_path):
-        print(r_str("Acceptance rate file not found!"))
-        acceptance_rates_per_req = {}
+    if not os.path.exists(dsd_stat_list_path):
+        print(r_str("DSD stat list file not found!"))
+        dsd_stat_list  = []
         benchmark_success = False
     else:
-        acceptance_rates_list = torch.load(acceptance_list_export_path)
-        acceptance_rates_per_req = {req_idx: acceptance_rate
-            for req_idx, acceptance_rate in enumerate(acceptance_rates_list)}
+        dsd_stat_list = torch.load(dsd_stat_list_path)
         time_str = str(int(time.time()))[-8:]
         random_num = str(random.randint(1000, 9999))
-        output_path = f"accept_rate_dist_{time_str}_{random_num}.json"
-        while os.path.exists(output_path):
-            random_num = str(random.randint(1000, 9999))
-            output_path = f"accept_rate_dist_{time_str}_{random_num}.json"
-    json_data = {
+    output_path = f"dsd_per_req_stat_{time_str}_{random_num}.pt"
+    while os.path.exists(output_path):
+        random_num = str(random.randint(1000, 9999))
+        output_path = f"accept_rate_dist_{time_str}_{random_num}.pt"
+    data = {
         "model": model,
         "dataset": dataset,
         "dataset_path": datapath,
@@ -115,16 +113,8 @@ for tp_model, dataset_datapath, spec_config, output_len in \
         "spec_config": spec_config,
         "output_len": output_len,
         "benchmark_success": benchmark_success,
-        "acceptance_rates_per_req": acceptance_rates_per_req,
+        "dsd_stat_list": dsd_stat_list ,
     }
-    # Save the JSON data to a file
-    with open(output_path, 'w') as json_file:
-        json.dump(json_data, json_file, indent=4)
-    print(g_str("Acceptance rates saved to: ") + output_path)
-    
-    if os.path.exists(acceptance_export_path):
-        os.remove(acceptance_export_path)
-    if os.path.exists(acceptance_list_export_path):
-        os.remove(acceptance_list_export_path)
-
+    torch.save(data, output_path)
+    print(g_str("DSD benchmark data saved to: ") + output_path)
     

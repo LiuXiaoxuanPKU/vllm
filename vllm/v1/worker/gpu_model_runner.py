@@ -156,7 +156,6 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         self.encoder_cache: dict[str, dict[int, torch.Tensor]] = {}
 
         # Set up speculative decoding.
-        self.use_spec_decode = False
         if self.speculative_config:
             self.use_spec_decode = True
             self.auto_tuner = AutoTuner()
@@ -172,6 +171,9 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                     raise ValueError("Unknown speculative decoding method: "
                                      f"{self.speculative_config.method}")
                 self.rejection_sampler = RejectionSampler()
+        else:
+            self.use_spec_decode = False
+            self.auto_tuner = None
 
         # Request states.
         self.requests: dict[str, CachedRequestState] = {}
@@ -1074,6 +1076,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 logits=logits,
                 sampling_metadata=sampling_metadata,
             )
+            output_probs = None
         else:
             # When indexing with a tensor (bonus_logits_indices), PyTorch
             # creates a new tensor with separate storage from the original
@@ -1090,15 +1093,17 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             # separate storage from the original `logits` tensor. Therefore,
             # it is safe to update `target_logits` in place.
             target_logits = logits[spec_decode_metadata.target_logits_indices]
-            output_token_ids, acceptance_rate = self.rejection_sampler(
+            output_token_ids, output_probs = self.rejection_sampler(
                 spec_decode_metadata,
                 None,  # draft_probs
                 target_logits,
                 bonus_token_ids,
                 sampling_metadata,
             )
-            self.auto_tuner.update_stats(acceptance_rate)
             sampler_output.sampled_token_ids = output_token_ids
+        if self.auto_tuner is not None:
+            # Stats are always updated when using speculative decoding.
+            self.auto_tuner.update_stats(output_probs)
 
         # TODO(woosuk): The following loop can be slow since it iterates over
         # the requests one by one. Optimize.
@@ -1226,6 +1231,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             prompt_logprobs_dict=prompt_logprobs_dict,
         )
 
+    # N-gram drafter
     def generate_draft_token_ids(
         self,
         sampled_token_ids: list[list[int]],

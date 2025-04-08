@@ -103,9 +103,7 @@ class RejectionSampler(nn.Module):
             bonus_token_ids,
             sampling_metadata,
         )
-        mask = output_probs != PLACEHOLDER_TOKEN_ID
-        acceptance_rate = output_probs[mask].mean()
-        return output_token_ids, acceptance_rate
+        return output_token_ids, output_probs
 
     @staticmethod
     def parse_output(

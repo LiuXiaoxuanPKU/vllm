@@ -4,6 +4,10 @@ from vllm.distributed import get_tensor_model_parallel_rank
 from vllm import envs
 import torch
 import os
+import math
+
+import triton.language as tl
+PLACEHOLDER_TOKEN_ID: tl.constexpr = -1
 
 class AutoTuner:
 
@@ -16,6 +20,8 @@ class AutoTuner:
         self.total_cnt = 0
         self.past_acceptance_rates = []
         self.past_match_ratios = []
+        self.past_output_probs = []
+        self.past_draft_token_ids = []
 
         # config
         self.update_interval = 100
@@ -26,7 +32,60 @@ class AutoTuner:
 
         # some cached values
         self.last_verified_len = 0
-
+        
+        # export path
+        self.stat_export_path = "dsd_stats.pt"
+        
+    def reset_stats(self):
+        self.step_cnt = 0
+        self.match_cnt = 0
+        self.total_cnt = 0
+        self.past_match_ratios = []
+        self.past_output_probs = []
+        self.past_draft_token_ids = []
+        
+        
+    def update_stats(self, output_probs: torch.tensor):
+        self.step_cnt += 1
+        self.past_output_probs.append(output_probs)
+        if get_tensor_model_parallel_rank() == 0:
+            if output_probs is not None:
+                mask = output_probs != PLACEHOLDER_TOKEN_ID
+                acceptance_rate = output_probs[mask].mean()
+                self.past_acceptance_rates.append(acceptance_rate)
+                global_acceptance_rate = self.acceptance_rate
+            else:
+                acceptance_rate = torch.tensor(math.nan)
+                if len(self.past_acceptance_rates) == 0:
+                    global_acceptance_rate = torch.tensor(math.nan)
+                else:
+                    global_acceptance_rate = self.acceptance_rate
+            if self.step_cnt % 20 == 0:
+                print(
+                    f"Step {self.step_cnt}: "
+                    f"Last acceptance rate: {acceptance_rate:.2f}",
+                    f"Last match ratio: {self.past_match_ratios[-1]:.2f}",
+                    f"Global acceptance rate: {global_acceptance_rate:.2f}",
+                    "Global match ratio:",
+                    f"{self.match_cnt / (self.total_cnt + 1e-5):.2f}",
+                )
+            if envs.EXPORT_AUTO_TUNER and \
+                not os.path.exists(self.stat_export_path):
+                    dsd_stats = {
+                        "step_cnt": self.step_cnt,
+                        "match_cnt": self.match_cnt,
+                        "total_cnt": self.total_cnt,
+                        "match_ratios": self.past_match_ratios,
+                        "output_probs": self.past_output_probs,
+                        "draft_token_ids": self.past_draft_token_ids,                       
+                    }
+                    print(f"\033[91mSaving DSD stats to\033[0m "
+                          f"{self.stat_export_path}, step {self.step_cnt}")
+                    # print(f"Stats: {dsd_stats}")
+                    torch.save(dsd_stats, self.stat_export_path)
+                    self.reset_stats() 
+                    print(f"\033[91mDSD stats reset.\033[0m ")
+                
     def get_verified_len(self, batch_size: int, match_cnt: int,
                          num_kv_tokens: int, max_draft_len: int) -> int:
         if self.step_cnt % self.update_interval != 0:
@@ -61,6 +120,7 @@ class AutoTuner:
         match_cnt = 0
         max_draft_len = 0
 
+        self.past_draft_token_ids.append(draft_token_ids)
         for i in range(batch_size):
             if len(draft_token_ids[i]) == 0:
                 continue
@@ -77,28 +137,6 @@ class AutoTuner:
 
         draft_token_ids = [draft[:verified_len] for draft in draft_token_ids]
         return draft_token_ids
-
-    def update_stats(self, acceptance_rate: torch.tensor):
-        self.step_cnt += 1
-        self.past_acceptance_rates.append(acceptance_rate)
-        if get_tensor_model_parallel_rank() == 0:
-            if self.step_cnt % 20 == 0:
-                print(
-                    f"Step {self.step_cnt}: "
-                    f"Last acceptance rate: {acceptance_rate:.2f}",
-                    f"Last match ratio: {self.past_match_ratios[-1]:.2f}",
-                    f"Global acceptance rate: {self.acceptance_rate:.2f}",
-                    "Global match ratio:",
-                    f"{self.match_cnt / (self.total_cnt + 1e-5):.2f}",
-                )
-            if envs.EXPORT_AUTO_TUNER:
-                # print (self.past_acceptance_rates)
-                acceptance_export_path = "acceptance_rate_tmp.pt"
-                # if self.step_cnt % 1 == 0:
-                #     print(f"\033[91mSaving acceptance rate to\033[0m {acceptance_export_path}, "
-                #           f"step {self.step_cnt}, list length {len(self.past_acceptance_rates)}")
-                torch.save(self.past_acceptance_rates, acceptance_export_path)
-            
 
     @property
     def acceptance_rate(self):

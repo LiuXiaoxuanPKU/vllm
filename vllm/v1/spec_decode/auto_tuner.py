@@ -4,10 +4,7 @@ import os
 import time
 from dataclasses import dataclass
 
-import numpy as np
-import pandas as pd
 import torch
-from joblib import load
 
 from vllm.distributed import get_tensor_model_parallel_rank
 from vllm.v1.core.sched.output import SchedulerOutput
@@ -42,13 +39,16 @@ class AutoTuner:
 
         # timer
         self.timer = AutoTunerTimer()
-        model_dir = "/data/lily/vllm-eagle-weight/dsd/models"
-        self.draft_model = load(
-            os.path.join(model_dir, "model_propose_time.joblib"))
-        self.target_model = load(
-            os.path.join(model_dir, "model_verify_time.joblib"))
-        self.overhead_model = load(
-            os.path.join(model_dir, "model_rejection_sampling.joblib"))
+
+        # Llama70B, TP4, H100
+        self.target_c_kv = 0.417
+        self.target_c_compute = 5.236
+        self.target_c_batch_size = -0.873
+        self.target_c_enable_spec_decode = -0.055
+        self.target_c_fixed = 20.12
+
+        self.draft_percentage = 0.04
+        self.overhead_percentage = 0.05
 
     def get_verified_len(self, batch_size: int, match_cnt: int,
                          num_kv_tokens: int, max_draft_len: int) -> int:
@@ -144,12 +144,10 @@ class AutoTuner:
         """
         generated_len = self._predict_generated_len(batch_size, match_cnt,
                                                     verified_len)
-        draft_time = self._predict_draft_time(batch_size, match_cnt,
-                                              num_kv_tokens, verified_len)
         target_time = self._predict_target_time(batch_size, match_cnt,
                                                 num_kv_tokens, verified_len)
-        overhead = self._predict_overhead(batch_size, match_cnt, num_kv_tokens,
-                                          verified_len)
+        overhead = self._predict_overhead(target_time)
+        draft_time = self._predict_draft_time(target_time)
         batch_time = draft_time + target_time + overhead
         return generated_len / batch_time, draft_time, target_time
 
@@ -160,23 +158,8 @@ class AutoTuner:
         non_spec_gen_len = batch_size - match_cnt
         return spec_gen_len + non_spec_gen_len
 
-    def _predict_draft_time(self, batch_size: int, match_cnt: int,
-                            num_kv_tokens: int, verified_len: int) -> float:
-        num_batched_tokens = match_cnt * (verified_len + 1) + (batch_size -
-                                                               match_cnt)
-        feature_columns = [
-            'num_kv_tokens',
-            'num_compute_tokens',
-            'batch_size',
-            'enable_spec_decode'  # 对应 match_cnt > 0 的布尔值
-        ]
-
-        feature_values = np.array(
-            [num_kv_tokens, num_batched_tokens, batch_size, match_cnt
-             > 0]).reshape(1, -1)
-
-        features_df = pd.DataFrame(feature_values, columns=feature_columns)
-        return self.draft_model.predict(features_df)[0].item()
+    def _predict_draft_time(self, target_time: float) -> float:
+        return self.draft_percentage * target_time
 
     def _predict_target_time(self, batch_size: int, match_cnt: int,
                              num_kv_tokens: int, verified_len: int) -> float:
@@ -185,41 +168,15 @@ class AutoTuner:
         num_batched_tokens = match_cnt * (verified_len + 1) + (batch_size -
                                                                match_cnt)
 
-        feature_columns = [
-            'num_kv_tokens',
-            'num_compute_tokens',
-            'batch_size',
-            'enable_spec_decode'  # 对应 match_cnt > 0 的布尔值
-        ]
+        target_time = (self.target_c_kv * num_kv_tokens +
+                       self.target_c_compute * num_batched_tokens +
+                       self.target_c_batch_size * batch_size +
+                       self.target_c_enable_spec_decode * (match_cnt > 0) +
+                       self.target_c_fixed)
+        return target_time
 
-        feature_values = np.array(
-            [num_kv_tokens, num_batched_tokens, batch_size, match_cnt
-             > 0]).reshape(1, -1)
-
-        features_df = pd.DataFrame(feature_values, columns=feature_columns)
-
-        return self.target_model.predict(features_df)[0].item()
-
-    def _predict_overhead(self, batch_size: int, match_cnt: int,
-                          num_kv_tokens: int, verified_len: int) -> float:
-        # Overhead time
-        # +1 for the input token.
-        num_batched_tokens = match_cnt * (verified_len + 1) + (batch_size -
-                                                               match_cnt)
-        feature_columns = [
-            'num_kv_tokens',
-            'num_compute_tokens',
-            'batch_size',
-            'enable_spec_decode'
-        ]
-
-        feature_values = np.array(
-            [num_kv_tokens, num_batched_tokens, batch_size, match_cnt
-             > 0]).reshape(1, -1)
-
-        features_df = pd.DataFrame(feature_values, columns=feature_columns)
-
-        return self.overhead_model.predict(features_df)[0].item()
+    def _predict_overhead(self, target_time: float) -> float:
+        return self.overhead_percentage * target_time
 
 
 @dataclass

@@ -17,14 +17,6 @@ def y_str(s):
 def b_str(s):
     return "\033[94m" + str(s) + "\033[0m"
 
-def clear_auto_tuner_controls(auto_tuner_stat_path):
-    if os.path.exists("EXPORT_AUTO_TUNER"):
-        os.remove("EXPORT_AUTO_TUNER")
-    if os.path.exists("CLEAR_AUTO_TUNER"):
-        os.remove("CLEAR_AUTO_TUNER")
-    if os.path.exists(auto_tuner_stat_path):
-        os.remove(auto_tuner_stat_path)
-
 tp_model_list = [
     [4, "meta-llama/Meta-Llama-3.1-70B-Instruct"],
     [2, "Qwen/QwQ-32B"], 
@@ -65,13 +57,24 @@ spec_config_list = [
 ]
 batch_size = 256
 output_len_list = [512]
+output_dir = f"auto_tuner_benchmark_output_{str(int(time.time()))[-8:]}"
+os.makedirs(output_dir, exist_ok=True)
+export_auto_tuner_flag_path = f"{output_dir}/EXPORT_AUTO_TUNER_FLAG"
+clear_auto_tuner_flag_path = f"{output_dir}/CLEAR_AUTO_TUNER_FLAG"
 
+def clear_auto_tuner_controls(auto_tuner_stat_path):
+    if os.path.exists(export_auto_tuner_flag_path):
+        os.remove(export_auto_tuner_flag_path)
+    if os.path.exists(clear_auto_tuner_flag_path):
+        os.remove(clear_auto_tuner_flag_path)
+    if os.path.exists(auto_tuner_stat_path):
+        os.remove(auto_tuner_stat_path)
 
 for tp_model, dataset_datapath, spec_config, output_len in \
     product(tp_model_list, dataset_datapath_list, spec_config_list, output_len_list):
     
     random_num = str(random.randint(100000, 999999))
-    auto_tuner_stat_path = f"auto_tuner_stats_{random_num}.pt"
+    auto_tuner_stat_path = f"{output_dir}/auto_tuner_stats_{random_num}.pt"
     clear_auto_tuner_controls(auto_tuner_stat_path)
         
     tp, model = tp_model
@@ -79,6 +82,8 @@ for tp_model, dataset_datapath, spec_config, output_len in \
     # Run the benchmark script
     benchmark_cmd = \
         f"VLLM_USE_V1=1 EXPORT_AUTO_TUNER_PATH={auto_tuner_stat_path} "\
+        f"EXPORT_AUTO_TUNER_FLAG_PATH={export_auto_tuner_flag_path} "\
+        f"CLEAR_AUTO_TUNER_FLAG_PATH={clear_auto_tuner_flag_path} "\
         f"python3 benchmarks/benchmark_latency.py --enforce-eager "\
         f"--num-iters-warmup 0 --num-iters 1 "\
         f"--output-len {output_len} "\
@@ -100,19 +105,19 @@ for tp_model, dataset_datapath, spec_config, output_len in \
     print(g_str("Benchmark finished"))
     benchmark_success = (bench.returncode == 0)
     
-    
     if not os.path.exists(auto_tuner_stat_path):
-        print(r_str("DSD stat list file not found!"))
+        print(r_str("Auto tuner stat file not found!"))
         auto_tuner_stats  = {}
         benchmark_success = False
     else:
         auto_tuner_stats = torch.load(auto_tuner_stat_path)
     time_str = str(int(time.time()))[-8:]
     random_num = str(random.randint(100000, 999999))
-    output_path = f"dsd_per_req_stat_{time_str}_{random_num}.pt"
+    output_path = f"{output_dir}/auto_tuner_output_{time_str}_{random_num}.pt"
     while os.path.exists(output_path):
         random_num = str(random.randint(100000, 999999))
-        output_path = f"dsd_per_req_stat_{time_str}_{random_num}.pt"
+        output_path = \
+             f"{output_dir}/auto_tuner_output_{time_str}_{random_num}.pt"
     data = {
         "model": model,
         "dataset": dataset,
@@ -125,6 +130,6 @@ for tp_model, dataset_datapath, spec_config, output_len in \
     }
     # print(data)
     torch.save(data, output_path)
-    print(g_str("DSD benchmark data saved to: ") + output_path)
+    print(g_str("Auto tuner benchmark data saved to: ") + output_path)
     if os.path.exists(auto_tuner_stat_path):
         os.remove(auto_tuner_stat_path)

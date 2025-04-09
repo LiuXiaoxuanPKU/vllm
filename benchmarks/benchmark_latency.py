@@ -80,20 +80,25 @@ def main(args: argparse.Namespace):
             TextPrompt(prompt=request.prompt,
                        multi_modal_data=request.multi_modal_data))
         
+    export_auto_tuner_flag_path = \
+        os.getenv("EXPORT_AUTO_TUNER_FLAG_PATH", "EXPORT_AUTO_TUNER_FLAG")
+    clear_auto_tuner_flag_path = \
+        os.getenv("CLEAR_AUTO_TUNER_FLAG_PATH", "CLEAR_AUTO_TUNER_FLAG")
+    
     def clear_auto_tuner_controls():
-        if os.path.exists("EXPORT_AUTO_TUNER"):
-            os.remove("EXPORT_AUTO_TUNER")
-        if os.path.exists("CLEAR_AUTO_TUNER"):
-            os.remove("CLEAR_AUTO_TUNER")
-        
+        if os.path.exists(export_auto_tuner_flag_path):
+            os.remove(export_auto_tuner_flag_path)
+        if os.path.exists(clear_auto_tuner_flag_path):
+            os.remove(clear_auto_tuner_flag_path)
+
     def collect_auto_tuner_stats():
         sampling_params_collect = SamplingParams(
             n=1,
             max_tokens=1,
             detokenize=not args.disable_detokenize,
         )
-        torch.save([], "EXPORT_AUTO_TUNER")
-        torch.save([], "CLEAR_AUTO_TUNER")
+        torch.save([], export_auto_tuner_flag_path)
+        torch.save([], clear_auto_tuner_flag_path)
         print (g_str("Collecting Auto Tuner stats..."))
         llm.generate(
             prompts[0],
@@ -118,11 +123,11 @@ def main(args: argparse.Namespace):
                     ignore_eos=True,
                 ),
             )
-        for output in outputs:
-            for text_output in output.outputs:
-                gen_text = text_output.text
-                print(y_str("\tPrompt: ") + f"{output.prompt!r}\n"
-                    + y_str("\tResponse: ") + f"{gen_text!r}")
+        # for output in outputs:
+        #     for text_output in output.outputs:
+        #         gen_text = text_output.text
+        #         print(y_str("\tPrompt: ") + f"{output.prompt!r}\n"
+        #             + y_str("\tResponse: ") + f"{gen_text!r}")
         
     def run_to_completion(profile_dir: Optional[str] = None):
         if profile_dir:

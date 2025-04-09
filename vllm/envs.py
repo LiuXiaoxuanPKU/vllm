@@ -107,6 +107,8 @@ if TYPE_CHECKING:
     VLLM_TPU_BUCKET_PADDING_GAP: int = 0
     VLLM_USE_DEEP_GEMM: bool = False
     EXPORT_AUTO_TUNER_PATH: Optional[str] = None
+    EXPORT_AUTO_TUNER_FLAG_PATH: Optional[str] = None
+    CLEAR_AUTO_TUNER_FLAG_PATH: Optional[str] = None
 
 
 def get_default_cache_root():
@@ -702,6 +704,10 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # If set, vllm will export the auto-tuner results to a file
     "EXPORT_AUTO_TUNER_PATH":
     lambda: os.getenv("EXPORT_AUTO_TUNER_PATH", "auto_tuner_stats.pt"),
+    "EXPORT_AUTO_TUNER_FLAG_PATH":
+    lambda: os.getenv("EXPORT_AUTO_TUNER_FLAG_PATH", "EXPORT_AUTO_TUNER_FLAG"),
+    "CLEAR_AUTO_TUNER_FLAG_PATH":
+    lambda: os.getenv("CLEAR_AUTO_TUNER_FLAG_PATH", "CLEAR_AUTO_TUNER_FLAG"),
 }
 
 # end-env-vars-definition

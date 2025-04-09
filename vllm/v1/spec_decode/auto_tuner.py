@@ -5,18 +5,20 @@ import time
 from dataclasses import dataclass
 
 import numpy as np
+import pandas as pd
 import torch
 from joblib import load
-import pandas as pd
 
 from vllm.distributed import get_tensor_model_parallel_rank
 from vllm.v1.core.sched.output import SchedulerOutput
 from vllm.v1.worker.gpu_input_batch import CachedRequestState
 
+
 def rank_print(*args, sep: str = " ", end: str = "\n"):
     if get_tensor_model_parallel_rank() == 0:
         message = sep.join(str(arg) for arg in args)
         print(message, end=end)
+
 
 class AutoTuner:
 
@@ -58,10 +60,12 @@ class AutoTuner:
         for i in range(max_draft_len):
             cur_goodput, draft_time, target_time = self._predict_goodput(
                 batch_size, match_cnt, num_kv_tokens, i)
-            rank_print(f"Goodput for k={i}: {cur_goodput:.2f},",
-                       f"batch_size: {batch_size},",
-                       f"Acceptance rate: {self.acceptance_rate:.2f},",
-                       f"draft_time: {draft_time:.2f}, target_time: {target_time:.2f}")
+            rank_print(
+                f"Goodput for k={i}: {cur_goodput:.2f},",
+                f"batch_size: {batch_size},",
+                f"Acceptance rate: {self.acceptance_rate:.2f},",
+                f"draft_time: {draft_time:.2f}, target_time: {target_time:.2f}"
+            )
             if cur_goodput > max_goodput:
                 max_goodput = cur_goodput
                 best_verified_len = i
@@ -161,20 +165,17 @@ class AutoTuner:
         num_batched_tokens = match_cnt * (verified_len + 1) + (batch_size -
                                                                match_cnt)
         feature_columns = [
-            'num_kv_tokens', 
-            'num_compute_tokens', 
-            'batch_size', 
+            'num_kv_tokens',
+            'num_compute_tokens',
+            'batch_size',
             'enable_spec_decode'  # 对应 match_cnt > 0 的布尔值
         ]
-    
+
         feature_values = np.array(
             [num_kv_tokens, num_batched_tokens, batch_size, match_cnt
              > 0]).reshape(1, -1)
-        
-        features_df = pd.DataFrame(
-            feature_values,
-            columns=feature_columns
-        )
+
+        features_df = pd.DataFrame(feature_values, columns=feature_columns)
         return self.draft_model.predict(features_df)[0].item()
 
     def _predict_target_time(self, batch_size: int, match_cnt: int,
@@ -183,23 +184,20 @@ class AutoTuner:
         # +1 for the input token.
         num_batched_tokens = match_cnt * (verified_len + 1) + (batch_size -
                                                                match_cnt)
-        
+
         feature_columns = [
-            'num_kv_tokens', 
-            'num_compute_tokens', 
-            'batch_size', 
+            'num_kv_tokens',
+            'num_compute_tokens',
+            'batch_size',
             'enable_spec_decode'  # 对应 match_cnt > 0 的布尔值
         ]
-    
+
         feature_values = np.array(
             [num_kv_tokens, num_batched_tokens, batch_size, match_cnt
              > 0]).reshape(1, -1)
-        
-        features_df = pd.DataFrame(
-            feature_values,
-            columns=feature_columns
-        )
-        
+
+        features_df = pd.DataFrame(feature_values, columns=feature_columns)
+
         return self.target_model.predict(features_df)[0].item()
 
     def _predict_overhead(self, batch_size: int, match_cnt: int,
@@ -209,21 +207,18 @@ class AutoTuner:
         num_batched_tokens = match_cnt * (verified_len + 1) + (batch_size -
                                                                match_cnt)
         feature_columns = [
-            'num_kv_tokens', 
-            'num_compute_tokens', 
-            'batch_size', 
-            'enable_spec_decode'  # 对应 match_cnt > 0 的布尔值
+            'num_kv_tokens',
+            'num_compute_tokens',
+            'batch_size',
+            'enable_spec_decode'
         ]
-    
+
         feature_values = np.array(
             [num_kv_tokens, num_batched_tokens, batch_size, match_cnt
              > 0]).reshape(1, -1)
-        
-        features_df = pd.DataFrame(
-            feature_values,
-            columns=feature_columns
-        )
-        
+
+        features_df = pd.DataFrame(feature_values, columns=feature_columns)
+
         return self.overhead_model.predict(features_df)[0].item()
 
 

@@ -1121,10 +1121,11 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 sampling_metadata,
             )
             sampler_output.sampled_token_ids = output_token_ids
+    
         if self.auto_tuner is not None:
             # Stats are always updated when using speculative decoding.
-            self.auto_tuner.update_stats(output_probs)
-
+            self.auto_tuner.update_stats(output_probs, self.input_batch.req_ids)
+        
         # TODO(woosuk): The following loop can be slow since it iterates over
         # the requests one by one. Optimize.
         discard_sampled_tokens_req_indices = []
@@ -1283,8 +1284,8 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             else:
                 draft_token_ids.append(drafter_output.tolist())
 
-        draft_token_ids = self.auto_tuner.adjust_draft_len(
-            self.requests, draft_token_ids)
+            draft_token_ids = self.auto_tuner.adjust_draft_len(
+                self.requests, draft_token_ids)
         return draft_token_ids
 
     def load_model(self) -> None:

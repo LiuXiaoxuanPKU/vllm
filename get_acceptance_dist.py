@@ -17,10 +17,17 @@ def y_str(s):
 def b_str(s):
     return "\033[94m" + str(s) + "\033[0m"
 
+def clear_auto_tuner_controls(auto_tuner_stat_path):
+    if os.path.exists("EXPORT_AUTO_TUNER"):
+        os.remove("EXPORT_AUTO_TUNER")
+    if os.path.exists("CLEAR_AUTO_TUNER"):
+        os.remove("CLEAR_AUTO_TUNER")
+    if os.path.exists(auto_tuner_stat_path):
+        os.remove(auto_tuner_stat_path)
+
 tp_model_list = [
-    # [4, "meta-llama/Meta-Llama-3.1-70B-Instruct"],
-    # [2, "Qwen/Qwen2.5-32B-Instruct"], 
-    # [2, "Qwen/QwQ-32B"], 
+    [4, "meta-llama/Meta-Llama-3.1-70B-Instruct"],
+    [2, "Qwen/QwQ-32B"], 
     [1, "meta-llama/Meta-Llama-3.1-8B-Instruct"], 
     [1, "Qwen/Qwen2.5-3B-Instruct"],
 ]
@@ -39,49 +46,48 @@ spec_config_list = [
         "num_speculative_tokens": 3
     }
     """,
-    # """
-    # {
-    #     "model": "ngram",
-    #     "prompt_lookup_max": 7,
-    #     "prompt_lookup_min": 3,
-    #     "num_speculative_tokens": 4
-    # }
-    # """,
-    # """
-    # {
-    #     "model": "ngram",
-    #     "prompt_lookup_max": 7,
-    #     "prompt_lookup_min": 3,
-    #     "num_speculative_tokens": 5
-    # }
-    # """
+    """
+    {
+        "model": "ngram",
+        "prompt_lookup_max": 7,
+        "prompt_lookup_min": 3,
+        "num_speculative_tokens": 4
+    }
+    """,
+    """
+    {
+        "model": "ngram",
+        "prompt_lookup_max": 7,
+        "prompt_lookup_min": 3,
+        "num_speculative_tokens": 5
+    }
+    """
 ]
-batch_size = 4
-output_len_list = [256]
-dsd_stat_path = "dsd_stats.pt"
-dsd_stat_list_path = "dsd_stat_list.pt"
+batch_size = 256
+output_len_list = [512]
+
 
 for tp_model, dataset_datapath, spec_config, output_len in \
     product(tp_model_list, dataset_datapath_list, spec_config_list, output_len_list):
-    if os.path.exists(dsd_stat_path):
-        os.remove(dsd_stat_path)
-    if os.path.exists(dsd_stat_list_path):
-        os.remove(dsd_stat_list_path)
+    
+    random_num = str(random.randint(100000, 999999))
+    auto_tuner_stat_path = f"auto_tuner_stats_{random_num}.pt"
+    clear_auto_tuner_controls(auto_tuner_stat_path)
         
     tp, model = tp_model
     dataset, datapath = dataset_datapath
     # Run the benchmark script
-    benchmark_cmd = f"VLLM_USE_V1=1 EXPORT_AUTO_TUNER=1 "\
+    benchmark_cmd = \
+        f"VLLM_USE_V1=1 EXPORT_AUTO_TUNER_PATH={auto_tuner_stat_path} "\
         f"python3 benchmarks/benchmark_latency.py --enforce-eager "\
-        f"--iterate-requests --num-iters-warmup 0 --num-iters 1 "\
+        f"--num-iters-warmup 0 --num-iters 1 "\
         f"--output-len {output_len} "\
         f"--tensor-parallel-size {tp} "\
         f"--batch-size {batch_size} "\
         f"--model {model} "\
         f"--dataset-name {dataset} "\
         f"--dataset-path {datapath} "\
-        f"--speculative-config '{spec_config}' "\
-
+        f"--speculative-config '{spec_config}' "
     print(g_str("Running command: ") + benchmark_cmd)
     bench = subprocess.Popen(benchmark_cmd, shell=True, 
                               stdout=sys.stdout, stderr=sys.stderr,
@@ -93,18 +99,20 @@ for tp_model, dataset_datapath, spec_config, output_len in \
     stdout, stderr = bench.communicate()
     print(g_str("Benchmark finished"))
     benchmark_success = (bench.returncode == 0)
-    if not os.path.exists(dsd_stat_list_path):
+    
+    
+    if not os.path.exists(auto_tuner_stat_path):
         print(r_str("DSD stat list file not found!"))
-        dsd_stat_list  = []
+        auto_tuner_stats  = {}
         benchmark_success = False
     else:
-        dsd_stat_list = torch.load(dsd_stat_list_path)
-        time_str = str(int(time.time()))[-8:]
-        random_num = str(random.randint(1000, 9999))
+        auto_tuner_stats = torch.load(auto_tuner_stat_path)
+    time_str = str(int(time.time()))[-8:]
+    random_num = str(random.randint(100000, 999999))
     output_path = f"dsd_per_req_stat_{time_str}_{random_num}.pt"
     while os.path.exists(output_path):
-        random_num = str(random.randint(1000, 9999))
-        output_path = f"accept_rate_dist_{time_str}_{random_num}.pt"
+        random_num = str(random.randint(100000, 999999))
+        output_path = f"dsd_per_req_stat_{time_str}_{random_num}.pt"
     data = {
         "model": model,
         "dataset": dataset,
@@ -113,8 +121,10 @@ for tp_model, dataset_datapath, spec_config, output_len in \
         "spec_config": spec_config,
         "output_len": output_len,
         "benchmark_success": benchmark_success,
-        "dsd_stat_list": dsd_stat_list ,
+        "auto_tuner_stats": auto_tuner_stats,
     }
+    # print(data)
     torch.save(data, output_path)
     print(g_str("DSD benchmark data saved to: ") + output_path)
-    
+    if os.path.exists(auto_tuner_stat_path):
+        os.remove(auto_tuner_stat_path)

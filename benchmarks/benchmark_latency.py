@@ -32,9 +32,6 @@ def y_str(s):
 def b_str(s):
     return "\033[94m" + str(s) + "\033[0m"
 
-dsd_stat_list_path = "dsd_stat_list.pt"
-dsd_stat_path = "dsd_stats.pt"
-
 def save_to_pytorch_benchmark_format(args: argparse.Namespace,
                                      results: dict[str, Any]) -> None:
     pt_records = convert_to_pytorch_benchmark_format(
@@ -65,7 +62,7 @@ def main(args: argparse.Namespace):
         n=args.n,
         temperature=0,
         top_p=1.0,
-        ignore_eos=True,
+        ignore_eos=False,
         max_tokens=args.output_len,
         detokenize=not args.disable_detokenize,
     )
@@ -82,55 +79,51 @@ def main(args: argparse.Namespace):
             if "prompt_token_ids" in request.prompt else \
             TextPrompt(prompt=request.prompt,
                        multi_modal_data=request.multi_modal_data))
+        
+    def clear_auto_tuner_controls():
+        if os.path.exists("EXPORT_AUTO_TUNER"):
+            os.remove("EXPORT_AUTO_TUNER")
+        if os.path.exists("CLEAR_AUTO_TUNER"):
+            os.remove("CLEAR_AUTO_TUNER")
+        
+    def collect_auto_tuner_stats():
+        sampling_params_collect = SamplingParams(
+            n=1,
+            max_tokens=1,
+            detokenize=not args.disable_detokenize,
+        )
+        torch.save([], "EXPORT_AUTO_TUNER")
+        torch.save([], "CLEAR_AUTO_TUNER")
+        print (g_str("Collecting Auto Tuner stats..."))
+        llm.generate(
+            prompts[0],
+            sampling_params=sampling_params_collect,
+            use_tqdm=False,
+        )
+        clear_auto_tuner_controls()
+        
     def llm_generate():
-        if(args.iterate_requests):
-            # Iterate through the requests in the dataset
-            print (y_str("Iterating through the requests in the dataset"))
-            dsd_stat_list = []
-            torch.save(dsd_stat_list, dsd_stat_path)
-            for prompt in prompts:
-                if not args.use_beam_search:
-                    outputs = llm.generate(
-                        prompt,
-                        sampling_params=sampling_params,
-                        use_tqdm=False,
-                    )
-                else:
-                    outputs = llm.beam_search(
-                        prompt,
-                        BeamSearchParams(
-                            beam_width=args.n,
-                            max_tokens=args.output_len,
-                            ignore_eos=True,
-                        ),
-                    )
-                for output in outputs:
-                    for text_output in output.outputs:
-                        gen_text = text_output.text
-                        # print(y_str("\tPrompt: ") + f"{output.prompt!r}\n"
-                        #     + y_str("\tResponse: ") + f"{gen_text!r}")
-                
-                dsd_stat_list.append(torch.load(dsd_stat_path))
-                print(y_str("DSD stats collected."))
-                os.remove(dsd_stat_path)
-            torch.save(dsd_stat_list, dsd_stat_list_path)
-            print(g_str("DSD stats saved to ") + dsd_stat_list_path)
-                
+        if not args.use_beam_search:
+            outputs = llm.generate(
+                prompts,
+                sampling_params=sampling_params,
+                use_tqdm=False,
+            )
         else:
-            if not args.use_beam_search:
-                llm.generate(prompts,
-                            sampling_params=sampling_params,
-                            use_tqdm=False)
-            else:
-                llm.beam_search(
-                    prompts,
-                    BeamSearchParams(
-                        beam_width=args.n,
-                        max_tokens=args.output_len,
-                        ignore_eos=True,
-                    ),
-                )
-
+            outputs = llm.beam_search(
+                prompts,
+                BeamSearchParams(
+                    beam_width=args.n,
+                    max_tokens=args.output_len,
+                    ignore_eos=True,
+                ),
+            )
+        for output in outputs:
+            for text_output in output.outputs:
+                gen_text = text_output.text
+                print(y_str("\tPrompt: ") + f"{output.prompt!r}\n"
+                    + y_str("\tResponse: ") + f"{gen_text!r}")
+        
     def run_to_completion(profile_dir: Optional[str] = None):
         if profile_dir:
             with torch.profiler.profile(
@@ -150,10 +143,11 @@ def main(args: argparse.Namespace):
             latency = end_time - start_time
             return latency
 
+    clear_auto_tuner_controls()
     print("Warming up...")
     for _ in tqdm(range(args.num_iters_warmup), desc="Warmup iterations"):
         run_to_completion(profile_dir=None)
-
+    
     if args.profile:
         profile_dir = args.profile_result_dir
         if not profile_dir:
@@ -167,6 +161,7 @@ def main(args: argparse.Namespace):
     latencies = []
     for _ in tqdm(range(args.num_iters), desc="Profiling iterations"):
         latencies.append(run_to_completion(profile_dir=None))
+    collect_auto_tuner_stats()
     latencies = np.array(latencies)
     percentages = [10, 25, 50, 75, 90, 99]
     percentiles = np.percentile(latencies, percentages)
@@ -240,12 +235,6 @@ if __name__ == "__main__":
         choices=["sharegpt", "random", "sonnet", "burstgpt", "hf"],
         help="Name of the dataset to benchmark on.",
         default="sharegpt")
-    parser.add_argument(
-        "--iterate-requests",
-        action="store_true",
-        help="Iterate through the requests in the dataset instead of "
-        "batching them.",
-    )
     # random dataset
     parser.add_argument(
         "--random-range-ratio",

@@ -157,9 +157,11 @@ class GPUModelRunner(LoRAModelRunnerMixin):
 
         # Set up speculative decoding.
         self.use_spec_decode = False
-        self.auto_tuner = AutoTuner()
+        self.auto_tuner = AutoTuner(fixed_len=False, 
+                                    track_goodput=True)
         if self.speculative_config:
             self.use_spec_decode = True
+            self.auto_tuner.num_spec_tokens = self.speculative_config.num_speculative_tokens
             assert self.speculative_config.method == "ngram", \
                     "Currently, only ngram spec decode is supported in V1."
             if get_pp_group().is_last_rank:
@@ -981,7 +983,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         intermediate_tensors: Optional[IntermediateTensors] = None,
     ) -> Union[ModelRunnerOutput, torch.Tensor]:
         self._update_states(scheduler_output)
-        self.auto_tuner.timer.start_execution(self.requests, scheduler_output)
+        self.auto_tuner.start_execution(self.requests, scheduler_output)
 
         if not scheduler_output.total_num_scheduled_tokens:
             # Return empty ModelRunnerOuptut if there's no work to do.
@@ -1151,6 +1153,9 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             valid_sampled_token_ids[i].clear()
 
         self.auto_tuner.timer.start_propose()
+        if self.use_spec_decode:
+            self.auto_tuner.set_proposed_len(self.drafter)
+
         if not self.use_spec_decode:
             # Speculative decoding is not enabled.
             spec_token_ids = None
@@ -1223,7 +1228,10 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             del draft_probs
         self.auto_tuner.timer.end_propose()
 
-        self.auto_tuner.timer.end_execution()
+        self.auto_tuner.end_execution(
+            valid_sampled_token_ids,
+            spec_token_ids,
+        )
         return ModelRunnerOutput(
             req_ids=self.input_batch.req_ids,
             req_id_to_index=self.input_batch.req_id_to_index,

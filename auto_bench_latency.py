@@ -57,7 +57,7 @@ spec_config_list = [
 ]
 batch_size = 256
 output_len_list = [512]
-output_dir = f"auto_tuner_benchmark_output_{str(int(time.time()))[-8:]}"
+output_dir = f"auto_tuner_bench_latency_output_{str(int(time.time()))[-8:]}"
 os.makedirs(output_dir, exist_ok=True)
 export_auto_tuner_flag_path = f"{output_dir}/EXPORT_AUTO_TUNER_FLAG"
 clear_auto_tuner_flag_path = f"{output_dir}/CLEAR_AUTO_TUNER_FLAG"
@@ -76,14 +76,15 @@ for tp_model, dataset_datapath, spec_config, output_len in \
     random_num = str(random.randint(100000, 999999))
     auto_tuner_stat_path = f"{output_dir}/auto_tuner_stats_{random_num}.pt"
     clear_auto_tuner_controls(auto_tuner_stat_path)
+    os.environ["VLLM_USE_V1"] = "1"
+    os.environ["EXPORT_AUTO_TUNER_PATH"] = auto_tuner_stat_path
+    os.environ["EXPORT_AUTO_TUNER_FLAG_PATH"] = export_auto_tuner_flag_path
+    os.environ["CLEAR_AUTO_TUNER_FLAG_PATH"] = clear_auto_tuner_flag_path
         
     tp, model = tp_model
     dataset, datapath = dataset_datapath
     # Run the benchmark script
     benchmark_cmd = \
-        f"VLLM_USE_V1=1 EXPORT_AUTO_TUNER_PATH={auto_tuner_stat_path} "\
-        f"EXPORT_AUTO_TUNER_FLAG_PATH={export_auto_tuner_flag_path} "\
-        f"CLEAR_AUTO_TUNER_FLAG_PATH={clear_auto_tuner_flag_path} "\
         f"python3 benchmarks/benchmark_latency.py --enforce-eager "\
         f"--num-iters-warmup 0 --num-iters 1 "\
         f"--output-len {output_len} "\

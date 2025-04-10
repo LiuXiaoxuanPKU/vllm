@@ -6,6 +6,7 @@ import subprocess
 import signal
 from itertools import product
 import random
+import torch
 
 def r_str(s):
     return "\033[91m" + str(s) + "\033[0m"
@@ -19,7 +20,7 @@ def b_str(s):
 def check_server_status(base_port):
     """Check if the server is running."""
     server_ready = False
-    max_attempts = 150
+    max_attempts = 240
     attempt = 0
     while not server_ready and attempt < max_attempts:
         try:
@@ -44,16 +45,9 @@ def check_server_status(base_port):
 
 tp_model_list = [
     # [4, "meta-llama/Meta-Llama-3.1-70B-Instruct"],
-    # [2, "Qwen/Qwen2.5-32B-Instruct"], 
     # [2, "Qwen/QwQ-32B"], 
-    [1, "meta-llama/Meta-Llama-3.1-8B-Instruct"], 
+    # [1, "meta-llama/Meta-Llama-3.1-8B-Instruct"], 
     [1, "Qwen/Qwen2.5-3B-Instruct"],
-]
-dataset_datapath_list = [
-    ["hf", "AI-MO/aimo-validation-aime"],
-    ["sonnet", "/data/js_park/vllm_dsd/benchmarks/sonnet.txt"],
-    # ["sharegpt", "/data/js_park/vllm_dsd/ShareGPT_V3_unfiltered_cleaned_split.json"],
-    # ["hf", "likaixin/InstructCoder"],
 ]
 spec_config_list = [
     """
@@ -81,16 +75,23 @@ spec_config_list = [
     # }
     # """
 ]
-req_rate_list = [4]
-acceptance_export_path = "acceptance_rate_tmp.pt"
-acceptance_list_export_path = "acceptance_rates_per_req.pt"
-output_to_stdio = True
 
-if os.path.exists(acceptance_export_path):
-    os.remove(acceptance_export_path)
-if os.path.exists(acceptance_list_export_path):
-    os.remove(acceptance_list_export_path)
-    
+req_trace_list = ["test_trace.pt"]
+
+output_to_stdio = True
+output_dir = f"auto_tuner_bench_serving_output_{str(int(time.time()))[-8:]}"
+os.makedirs(output_dir, exist_ok=True)
+export_auto_tuner_flag_path = f"{output_dir}/EXPORT_AUTO_TUNER_FLAG"
+clear_auto_tuner_flag_path = f"{output_dir}/CLEAR_AUTO_TUNER_FLAG"
+
+def clear_auto_tuner_controls(auto_tuner_stat_path):
+    if os.path.exists(export_auto_tuner_flag_path):
+        os.remove(export_auto_tuner_flag_path)
+    if os.path.exists(clear_auto_tuner_flag_path):
+        os.remove(clear_auto_tuner_flag_path)
+    if os.path.exists(auto_tuner_stat_path):
+        os.remove(auto_tuner_stat_path)
+
 base_port = random.randint(31000, 39000)
 
 for tp_model, spec_config in \
@@ -98,8 +99,15 @@ for tp_model, spec_config in \
     base_port += 1
     tp, model = tp_model
     test_success = 1
+    random_num = str(random.randint(100000, 999999))
+    auto_tuner_stat_path = f"{output_dir}/auto_tuner_stats_{random_num}.pt"
+    os.environ["VLLM_USE_V1"] = "1"
+    os.environ["EXPORT_AUTO_TUNER_PATH"] = auto_tuner_stat_path
+    os.environ["EXPORT_AUTO_TUNER_FLAG_PATH"] = export_auto_tuner_flag_path
+    os.environ["CLEAR_AUTO_TUNER_FLAG_PATH"] = clear_auto_tuner_flag_path
+    
     # Run the benchmark vLLM server
-    server_cmd = f"VLLM_USE_V1=1 vllm serve {model} --swap-space 16 " \
+    server_cmd = f"vllm serve {model} --swap-space 16 " \
                  f"--disable-log-requests " \
                  f"--port {base_port} --speculative-config '{spec_config}' "
     print(g_str("Running server command: ") + server_cmd)
@@ -120,19 +128,17 @@ for tp_model, spec_config in \
         sys.exit(test_success)
     time.sleep(5)
     
-    for data_datapath, req_rate in \
-        product(dataset_datapath_list, req_rate_list):
-        dataset, datapath = data_datapath
+    for req_trace in req_trace_list:
+        clear_auto_tuner_controls(auto_tuner_stat_path)
+            
         # Run the benchmark client
-        client_cmd = f"VLLM_USE_V1=1 " \
+        client_cmd = \
                     f"python3 benchmarks/benchmark_serving.py " \
                     f"--port {base_port} " \
                     f"--model {model} " \
-                    f"--dataset-name {dataset} " \
-                    f"--dataset-path {datapath} " \
-                    f"--request-rate {req_rate} " \
+                    f"--req-trace {req_trace} " \
                     f"--num-prompts 10 " 
-                    #   f"--speculative-config '{spec_config}'"
+                    
         client_stdout, client_stderr = subprocess.PIPE, subprocess.PIPE
         if output_to_stdio:            
             client_stdout, client_stderr = sys.stdout, sys.stderr
@@ -153,9 +159,35 @@ for tp_model, spec_config in \
             # Capture the client logs
             client_logs = client.stdout.read()
             print(g_str("Client logs:"), client_logs.decode())
-        
             
-            
+        benchmark_success = (client.returncode == 0)
+        if not os.path.exists(auto_tuner_stat_path):
+            print(r_str("Auto tuner stat file not found!"))
+            auto_tuner_stats  = {}
+            benchmark_success = False
+        else:
+            auto_tuner_stats = torch.load(auto_tuner_stat_path)
+        time_str = str(int(time.time()))[-8:]
+        random_num = str(random.randint(100000, 999999))
+        output_path = f"{output_dir}/auto_tuner_output_{time_str}_{random_num}.pt"
+        while os.path.exists(output_path):
+            random_num = str(random.randint(100000, 999999))
+            output_path = \
+                f"{output_dir}/auto_tuner_output_{time_str}_{random_num}.pt"
+        data = {
+            "model": model,
+            "req_trace": req_trace,
+            "spec_config": spec_config,
+            "server_command": server_cmd,
+            "benchmark_success": benchmark_success,
+            "auto_tuner_stats": auto_tuner_stats,
+        }
+        # print(data)
+        torch.save(data, output_path)
+        print(g_str("Auto tuner benchmark data saved to: ") + output_path)
+        if os.path.exists(auto_tuner_stat_path):
+            os.remove(auto_tuner_stat_path)
+                
     # Terminate the server
     print(g_str("Terminating server..."))
     os.killpg(os.getpgid(server.pid), signal.SIGTERM)

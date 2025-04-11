@@ -104,7 +104,7 @@ class AutoTuner:
                         "past_match_ratios": self.past_match_ratios,
                         "per_req_history": self.per_req_history,                     
                     }
-                    print(f"\033[91mSaving DSD stats to\033[0m "
+                    print(f"\033[91mSaving Auto Tuner stats to\033[0m "
                             f"{envs.EXPORT_AUTO_TUNER_PATH}, step {self.step_cnt}")
                     if not os.path.exists(envs.EXPORT_AUTO_TUNER_PATH):
                         torch.save(dsd_stats, envs.EXPORT_AUTO_TUNER_PATH)
@@ -141,7 +141,6 @@ class AutoTuner:
         """
         Adjust the draft length based on the verified length.
         """
-
         # Calculate parameters used for goodput prediction.
         num_kv_tokens = 0
         for req_id in req_states:

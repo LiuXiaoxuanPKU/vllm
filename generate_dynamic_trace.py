@@ -1,6 +1,7 @@
 import torch
 import os
 import math
+import sys
 import numpy as np
 
 def r_str(s):
@@ -12,7 +13,7 @@ def y_str(s):
 def b_str(s):
     return "\033[94m" + str(s) + "\033[0m"
 
-num_prompts = 128
+num_prompts = int(sys.argv[1])
 num_datasets = 4
 request_rate_list = torch.tensor([1.0, 4.0, 8.0])
 

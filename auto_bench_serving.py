@@ -137,7 +137,7 @@ for tp_model, spec_config in \
                     f"--port {base_port} " \
                     f"--model {model} " \
                     f"--req-trace {req_trace} " \
-                    f"--num-prompts 10 " 
+                    f"--num-prompts 512 " 
                     
         client_stdout, client_stderr = subprocess.PIPE, subprocess.PIPE
         if output_to_stdio:            
@@ -179,6 +179,7 @@ for tp_model, spec_config in \
             "req_trace": req_trace,
             "spec_config": spec_config,
             "server_command": server_cmd,
+            "client_command": client_cmd,
             "benchmark_success": benchmark_success,
             "auto_tuner_stats": auto_tuner_stats,
         }

@@ -1178,7 +1178,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         elif self.speculative_config.method == "ngram":
             assert isinstance(self.drafter, NgramProposer)
             spec_token_ids = self.generate_draft_token_ids(
-                valid_sampled_token_ids, sampling_metadata)
+                valid_sampled_token_ids)
         elif self.speculative_config.method == "eagle":
             assert isinstance(self.drafter, EagleProposer)
             # TODO(woosuk): Refactor the loop.
@@ -1256,11 +1256,11 @@ class GPUModelRunner(LoRAModelRunnerMixin):
     def generate_draft_token_ids(
         self,
         sampled_token_ids: list[list[int]],
-        sampling_metadata: SamplingMetadata,
     ) -> list[list[int]]:
         # TODO(woosuk): Optimize.
         draft_token_ids: list[list[int]] = []
         for i, sampled_ids in enumerate(sampled_token_ids):
+            
             num_sampled_ids = len(sampled_ids)
             if not num_sampled_ids:
                 # Skip speculative decoding.
@@ -1283,7 +1283,6 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 draft_token_ids.append([])
             else:
                 draft_token_ids.append(drafter_output.tolist())
-
             draft_token_ids = self.auto_tuner.adjust_draft_len(
                 self.requests, draft_token_ids)
         return draft_token_ids

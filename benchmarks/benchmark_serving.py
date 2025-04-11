@@ -70,10 +70,10 @@ def b_str(s):
     return "\033[94m" + str(s) + "\033[0m"
 
 dataset_datapath_list = [
-    # ["hf", "AI-MO/aimo-validation-aime"],
+    ["hf", "AI-MO/aimo-validation-aime"],
     ["sonnet", "/data/js_park/vllm_dsd/benchmarks/sonnet.txt"],
-    # ["sharegpt", "/data/js_park/vllm_dsd/ShareGPT_V3_unfiltered_cleaned_split.json"],
-    # ["hf", "likaixin/InstructCoder"],
+    ["sharegpt", "/data/js_park/vllm_dsd/ShareGPT_V3_unfiltered_cleaned_split.json"],
+    ["hf", "likaixin/InstructCoder"],
 ]
 
 @dataclass
@@ -357,6 +357,9 @@ async def benchmark(
                 f"are correctly specified. Error: {test_output.error}")
         else:
             print("Initial test run completed. Starting main benchmark run...")
+        # print(y_str("Test prompt: ") + test_prompt +
+        #       y_str("\nTest output: ") + test_output.generated_text)
+        
         clear_auto_tuner_controls()
         
         if profile:

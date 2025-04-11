@@ -46,7 +46,7 @@ def check_server_status(base_port):
     return server_ready
 
 tp_model_list = [
-    # [4, "meta-llama/Meta-Llama-3.1-70B-Instruct"],
+    [4, "meta-llama/Meta-Llama-3.1-70B-Instruct"],
     [2, "Qwen/QwQ-32B"], 
     [1, "meta-llama/Meta-Llama-3.1-8B-Instruct"], 
     [1, "Qwen/Qwen2.5-3B-Instruct"],

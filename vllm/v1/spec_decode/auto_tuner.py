@@ -89,31 +89,31 @@ class AutoTuner:
                     "Global match ratio:",
                     f"{self.match_cnt / (self.total_cnt + 1e-5):.2f}",
                 )
-                # if os.path.exists(envs.EXPORT_AUTO_TUNER_FLAG_PATH):
-                #     dsd_stats = {
-                #         "update_interval": self.update_interval,
-                #         "window_size": self.window_size,
-                #         "c_kv_load": self.c_kv_load,
-                #         "c_computation": self.c_computation,
-                #         "c_overhead": self.c_overhead,
+                if os.path.exists(envs.EXPORT_AUTO_TUNER_FLAG_PATH):
+                    dsd_stats = {
+                        "update_interval": self.update_interval,
+                        "window_size": self.window_size,
+                        "c_kv_load": self.c_kv_load,
+                        "c_computation": self.c_computation,
+                        "c_overhead": self.c_overhead,
                     
-                #         "step_cnt": self.step_cnt,
-                #         "match_cnt": self.match_cnt,
-                #         "total_cnt": self.total_cnt,
-                #         "past_acceptance_rates": self.past_acceptance_rates,
-                #         "past_match_ratios": self.past_match_ratios,
-                #         "per_req_history": self.per_req_history,                     
-                #     }
-                #     print(f"\033[91mSaving Auto Tuner stats to\033[0m "
-                #             f"{envs.EXPORT_AUTO_TUNER_PATH}, step {self.step_cnt}")
-                #     if not os.path.exists(envs.EXPORT_AUTO_TUNER_PATH):
-                #         torch.save(dsd_stats, envs.EXPORT_AUTO_TUNER_PATH)
-                #     else:
-                #         raise FileExistsError(
-                #             f"File {envs.EXPORT_AUTO_TUNER_PATH} already exists.")
-                # if os.path.exists(envs.CLEAR_AUTO_TUNER_FLAG_PATH):
-                #     self.reset_stats() 
-                #     print(f"\033[91mAuto tuner stats reset.\033[0m ")
+                        "step_cnt": self.step_cnt,
+                        "match_cnt": self.match_cnt,
+                        "total_cnt": self.total_cnt,
+                        "past_acceptance_rates": self.past_acceptance_rates,
+                        "past_match_ratios": self.past_match_ratios,
+                        "per_req_history": self.per_req_history,                     
+                    }
+                    print(f"\033[91mSaving Auto Tuner stats to\033[0m "
+                            f"{envs.EXPORT_AUTO_TUNER_PATH}, step {self.step_cnt}")
+                    if not os.path.exists(envs.EXPORT_AUTO_TUNER_PATH):
+                        torch.save(dsd_stats, envs.EXPORT_AUTO_TUNER_PATH)
+                    else:
+                        raise FileExistsError(
+                            f"File {envs.EXPORT_AUTO_TUNER_PATH} already exists.")
+                if os.path.exists(envs.CLEAR_AUTO_TUNER_FLAG_PATH):
+                    self.reset_stats() 
+                    print(f"\033[91mAuto tuner stats reset.\033[0m ")
         self.step_cnt += 1
                 
     def get_verified_len(self, batch_size: int, match_cnt: int,

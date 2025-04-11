@@ -18,16 +18,16 @@ def b_str(s):
     return "\033[94m" + str(s) + "\033[0m"
 
 tp_model_list = [
-    [4, "meta-llama/Meta-Llama-3.1-70B-Instruct"],
-    [2, "Qwen/QwQ-32B"], 
+    # [4, "meta-llama/Meta-Llama-3.1-70B-Instruct"],
+    # [2, "Qwen/QwQ-32B"], 
     [1, "meta-llama/Meta-Llama-3.1-8B-Instruct"], 
     [1, "Qwen/Qwen2.5-3B-Instruct"],
 ]
 dataset_datapath_list = [
-    ["hf", "AI-MO/aimo-validation-aime"],
     ["sonnet", "/data/js_park/vllm_dsd/benchmarks/sonnet.txt"],
     ["sharegpt", "/data/js_park/vllm_dsd/ShareGPT_V3_unfiltered_cleaned_split.json"],
-    ["hf", "likaixin/InstructCoder"],
+    # ["hf", "AI-MO/aimo-validation-aime"],
+    # ["hf", "likaixin/InstructCoder"],
 ]
 spec_config_list = [
     None,
@@ -36,7 +36,8 @@ spec_config_list = [
         "model": "ngram",
         "prompt_lookup_max": 7,
         "prompt_lookup_min": 3,
-        "num_speculative_tokens": 3
+        "num_speculative_tokens": 3,
+        "dsd": false
     }
     """,
     """
@@ -44,17 +45,26 @@ spec_config_list = [
         "model": "ngram",
         "prompt_lookup_max": 7,
         "prompt_lookup_min": 3,
-        "num_speculative_tokens": 4
+        "num_speculative_tokens": 3,
+        "dsd": true
     }
     """,
-    """
-    {
-        "model": "ngram",
-        "prompt_lookup_max": 7,
-        "prompt_lookup_min": 3,
-        "num_speculative_tokens": 5
-    }
-    """
+    # """
+    # {
+    #     "model": "ngram",
+    #     "prompt_lookup_max": 7,
+    #     "prompt_lookup_min": 3,
+    #     "num_speculative_tokens": 4
+    # }
+    # """,
+    # """
+    # {
+    #     "model": "ngram",
+    #     "prompt_lookup_max": 7,
+    #     "prompt_lookup_min": 3,
+    #     "num_speculative_tokens": 5
+    # }
+    # """
 ]
 batch_size = 256
 output_len_list = [512]
@@ -148,3 +158,6 @@ for tp_model, dataset_datapath, spec_config, output_len in \
     print(g_str("Bench_latency data saved to: ") + output_path)
     if os.path.exists(auto_tuner_stat_path):
         os.remove(auto_tuner_stat_path)
+    if os.path.exists(benchmark_output_path):
+            os.remove(benchmark_output_path)
+print(g_str("All benchmarks finished!"))

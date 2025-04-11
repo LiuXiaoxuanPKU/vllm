@@ -1,12 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 import sys
-
+import vllm
 from vllm import LLM, SamplingParams
 
 model_path = sys.argv[1]
 tp_val = int(sys.argv[2])
-# load_format = sys.argv[3]
-
+# load_format = sys.argv[2]
 prompts = [
     "How do I write merge sort functions in C++, Python, and X86 Assembly? Give me a line-by-line explanation of each implementation.",
 ]
@@ -30,7 +29,7 @@ llm = LLM(model=model_path,
           tensor_parallel_size=tp_val,
           enforce_eager=True,
           max_num_batched_tokens=4096,
-          max_num_seqs=1024,)
+          max_num_seqs=1024)
         #   load_format=load_format)
 
 outputs = llm.generate(prompts, sampling_params)
@@ -40,3 +39,5 @@ for output in outputs:
     for text_output in output.outputs:
         generated_text = text_output.text
         print(f"Prompt: {prompt!r}, Generated text: {generated_text[:4096]!r}")
+
+print(vllm.__version__)

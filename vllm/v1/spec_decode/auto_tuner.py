@@ -11,13 +11,20 @@ from vllm.v1.core.sched.output import SchedulerOutput
 from vllm.v1.spec_decode.eagle import EagleProposer
 from vllm.v1.spec_decode.ngram_proposer import NgramProposer
 from vllm.v1.worker.gpu_input_batch import CachedRequestState
+from vllm.distributed import get_tensor_model_parallel_rank
+from vllm import envs
+import torch
+import os
+import math
+from copy import deepcopy
 
+import triton.language as tl
+PLACEHOLDER_TOKEN_ID: tl.constexpr = -1
 
 def rank_print(*args, sep: str = " ", end: str = "\n"):
     if get_tensor_model_parallel_rank() == 0:
         message = sep.join(str(arg) for arg in args)
         print(message, end=end)
-
 
 class AutoTuner:
 
@@ -33,6 +40,9 @@ class AutoTuner:
         self.total_cnt = 0
         self.past_acceptance_rates = []
         self.past_match_ratios = []
+        
+        self.per_req_history = {}
+        self.cur_draft_token_ids = []
 
         # config
         self.update_interval = 200
@@ -62,7 +72,87 @@ class AutoTuner:
 
         # timer
         self.timer = AutoTunerTimer(track_goodput=self.track_goodput)
-
+        
+    def reset_stats(self):
+        self.step_cnt = 0
+        self.match_cnt = 0
+        self.total_cnt = 0
+        self.past_acceptance_rates = []
+        self.past_match_ratios = []
+        
+        self.per_req_history = {}
+        self.cur_draft_token_ids = []
+        
+    def update_per_req_history(self, output_probs: torch.tensor, 
+                               req_ids: list[int]):
+        for i, req_id in enumerate(req_ids):
+            if req_id not in self.per_req_history:
+                self.per_req_history[req_id] = []
+            output_prob = None if output_probs is None else output_probs[i]
+            draft_token_ids = None if len(self.cur_draft_token_ids) <= i else \
+                self.cur_draft_token_ids[i]
+            self.per_req_history[req_id].append(
+                {"step": self.step_cnt,
+                 "output_probs": output_prob,
+                 "draft_token_ids": draft_token_ids})
+            
+    def update_acceptance_rates(self, output_probs: torch.tensor):
+        if output_probs is not None:
+            mask = output_probs != PLACEHOLDER_TOKEN_ID
+            acceptance_rate = output_probs[mask].mean()
+            self.past_acceptance_rates.append(acceptance_rate)
+            global_acceptance_rate = self.acceptance_rate
+        else:
+            acceptance_rate = torch.tensor(math.nan)
+            if len(self.past_acceptance_rates) == 0:
+                global_acceptance_rate = torch.tensor(math.nan)
+            else:
+                global_acceptance_rate = self.acceptance_rate
+        return acceptance_rate, global_acceptance_rate
+        
+    def update_stats(self, output_probs: torch.tensor, req_ids: list[int]):
+        self.update_per_req_history(output_probs, req_ids)
+        acceptance_rate, global_acceptance_rate = \
+            self.update_acceptance_rates(output_probs)
+        if get_tensor_model_parallel_rank() == 0:
+            if self.step_cnt % 100 == 0:
+                past_match_ratio = self.past_match_ratios[-1] if \
+                    len(self.past_match_ratios) > 0 else math.nan
+                print(
+                    f"Step {self.step_cnt}: "
+                    f"Last acceptance rate: {acceptance_rate:.2f}",
+                    f"Last match ratio: {past_match_ratio:.2f}",
+                    f"Global acceptance rate: {global_acceptance_rate:.2f}",
+                    "Global match ratio:",
+                    f"{self.match_cnt / (self.total_cnt + 1e-5):.2f}",
+                )
+                if os.path.exists(envs.EXPORT_AUTO_TUNER_FLAG_PATH):
+                    dsd_stats = {
+                        "update_interval": self.update_interval,
+                        "window_size": self.window_size,
+                        "c_kv_load": self.c_kv_load,
+                        "c_computation": self.c_computation,
+                        "c_overhead": self.c_overhead,
+                    
+                        "step_cnt": self.step_cnt,
+                        "match_cnt": self.match_cnt,
+                        "total_cnt": self.total_cnt,
+                        "past_acceptance_rates": self.past_acceptance_rates,
+                        "past_match_ratios": self.past_match_ratios,
+                        "per_req_history": self.per_req_history,                     
+                    }
+                    print(f"\033[91mSaving Auto Tuner stats to\033[0m "
+                            f"{envs.EXPORT_AUTO_TUNER_PATH}, step {self.step_cnt}")
+                    if not os.path.exists(envs.EXPORT_AUTO_TUNER_PATH):
+                        torch.save(dsd_stats, envs.EXPORT_AUTO_TUNER_PATH)
+                    else:
+                        raise FileExistsError(
+                            f"File {envs.EXPORT_AUTO_TUNER_PATH} already exists.")
+                if os.path.exists(envs.CLEAR_AUTO_TUNER_FLAG_PATH):
+                    self.reset_stats() 
+                    print(f"\033[91mAuto tuner stats reset.\033[0m ")
+        self.step_cnt += 1
+                
     def get_verified_len(self, batch_size: int, match_cnt: int,
                          num_kv_tokens: int, num_scheduled_tokens: int,
                          max_draft_len: int) -> int:
@@ -146,6 +236,7 @@ class AutoTuner:
         self.total_cnt += batch_size
         self.match_cnt += match_cnt
         self.past_match_ratios.append(match_cnt * 1.0 / (batch_size))
+        self.cur_draft_token_ids = draft_token_ids
 
         # Use goodput prediction to get the verified length.
         verified_len = self.get_verified_len(batch_size, match_cnt,
@@ -170,33 +261,6 @@ class AutoTuner:
                 scheduler_output.num_scheduled_tokens[
                     req_id] = num_scheduled_tokens
         scheduler_output.total_num_scheduled_tokens = total_num_scheduled_tokens
-
-    def update_stats(self, acceptance_rate: torch.tensor):
-        self.step_cnt += 1
-        if torch.isnan(acceptance_rate).any():
-            rank_print("Acceptance rate is NaN. Skipping update.",
-                       f"Step {self.step_cnt}",
-                       f"Acceptance rate: {acceptance_rate}")
-            return
-        self.past_acceptance_rates.append(acceptance_rate)
-        # if get_tensor_model_parallel_rank() == 0:
-        #     if self.step_cnt % 20 == 0:
-        #         rank_print(
-        #             f"Step {self.step_cnt}: "
-        #             f"Last acceptance rate: {acceptance_rate:.2f}",
-        #             f"Last match ratio: {self.past_match_ratios[-1]:.2f}",
-        #             f"Global acceptance rate: {self.acceptance_rate:.2f}",
-        #             "Global match ratio:",
-        #             f"{self.match_cnt / (self.total_cnt + 1e-5):.2f}",
-        #         )
-        #     # print (self.past_acceptance_rates)
-        #     acceptance_export_path = "acceptance_rate_tmp.pt"
-        #     # if self.step_cnt % 1 == 0:
-        #     #     print(f"\033[91mSaving acceptance rate
-        #     #           to\033[0m {acceptance_export_path}, "
-        #     #           f"step {self.step_cnt}, list length
-        #     #           {len(self.past_acceptance_rates)}")
-        #     torch.save(self.past_acceptance_rates, acceptance_export_path)
 
     def start_execution(self, requests: dict[str, CachedRequestState],
                         scheduler_output: SchedulerOutput):

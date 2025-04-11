@@ -106,6 +106,9 @@ if TYPE_CHECKING:
     VLLM_TPU_DISABLE_TOPK_TOPP_OPTIMIZATION: bool = False
     VLLM_TPU_BUCKET_PADDING_GAP: int = 0
     VLLM_USE_DEEP_GEMM: bool = False
+    EXPORT_AUTO_TUNER_PATH: Optional[str] = None
+    EXPORT_AUTO_TUNER_FLAG_PATH: Optional[str] = None
+    CLEAR_AUTO_TUNER_FLAG_PATH: Optional[str] = None
 
 
 def get_default_cache_root():
@@ -665,6 +668,11 @@ environment_variables: dict[str, Callable[[], Any]] = {
     lambda: os.environ.get("VLLM_CI_USE_S3", "0") == "1",
 
     # Use model_redirect to redirect the model name to a local folder.
+    # `model_redirect` can be a json file mapping the model between
+    # repo_id and local folder:
+    # {"meta-llama/Llama-3.2-1B": "/tmp/Llama-3.2-1B"}
+    # or a space separated values table file:
+    # meta-llama/Llama-3.2-1B   /tmp/Llama-3.2-1B
     "VLLM_MODEL_REDIRECT_PATH":
     lambda: os.environ.get("VLLM_MODEL_REDIRECT_PATH", None),
 
@@ -692,6 +700,14 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # Allow use of DeepGemm kernels for fused moe ops.
     "VLLM_USE_DEEP_GEMM":
     lambda: bool(int(os.getenv("VLLM_USE_DEEP_GEMM", "0"))),
+    
+    # If set, vllm will export the auto-tuner results to a file
+    "EXPORT_AUTO_TUNER_PATH":
+    lambda: os.getenv("EXPORT_AUTO_TUNER_PATH", "auto_tuner_stats.pt"),
+    "EXPORT_AUTO_TUNER_FLAG_PATH":
+    lambda: os.getenv("EXPORT_AUTO_TUNER_FLAG_PATH", "EXPORT_AUTO_TUNER_FLAG"),
+    "CLEAR_AUTO_TUNER_FLAG_PATH":
+    lambda: os.getenv("CLEAR_AUTO_TUNER_FLAG_PATH", "CLEAR_AUTO_TUNER_FLAG"),
 }
 
 # end-env-vars-definition

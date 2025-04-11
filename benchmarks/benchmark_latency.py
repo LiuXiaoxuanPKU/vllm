@@ -32,7 +32,6 @@ def y_str(s):
 def b_str(s):
     return "\033[94m" + str(s) + "\033[0m"
 
-
 def save_to_pytorch_benchmark_format(args: argparse.Namespace,
                                      results: dict[str, Any]) -> None:
     pt_records = convert_to_pytorch_benchmark_format(
@@ -44,41 +43,6 @@ def save_to_pytorch_benchmark_format(args: argparse.Namespace,
         pt_file = f"{os.path.splitext(args.output_json)[0]}.pytorch.json"
         write_to_json(pt_file, pt_records)
         
-first_execution_of_collect_acceptance_rates = True
-pre_acceptance_rate_len = 0
-def collect_acceptance_rates():
-    acceptance_export_path = "acceptance_rate_tmp.pt"
-    acceptance_list_export_path = "acceptance_rates_per_req.pt"
-    global first_execution_of_collect_acceptance_rates
-    global pre_acceptance_rate_len
-    if os.path.exists(acceptance_export_path):
-        acceptance_rates = torch.load(acceptance_export_path)
-    else:
-        acceptance_rates = []
-    # print(y_str("Found acceptance rate file of length ") + 
-    #       f"{len(acceptance_rates)}, " +
-    #       y_str("previous acceptance rate file length ") +
-    #       f"{pre_acceptance_rate_len} ")
-    if os.path.exists(acceptance_list_export_path) and \
-         not first_execution_of_collect_acceptance_rates:
-        acceptance_list = torch.load(acceptance_list_export_path)
-    else:
-        acceptance_list = []
-        first_execution_of_collect_acceptance_rates = False
-    new_pre_acceptance_rate_len = len(acceptance_rates)
-    acceptance_rates_torch = acceptance_rates[pre_acceptance_rate_len:]
-    acceptance_rates = [acceptance_rates_torch[i].item() \
-        for i in range(len(acceptance_rates_torch))]
-    pre_acceptance_rate_len = new_pre_acceptance_rate_len
-    acceptance_list.append(acceptance_rates)
-    print(b_str("Saving acceptance rate list of length ") +
-          f"{len(acceptance_list)} " +
-          b_str("to ") +
-          f"{acceptance_list_export_path}, " +
-          b_str("appended new req of length ") +
-          f"{len(acceptance_list[-1])} ")
-    torch.save(acceptance_list, acceptance_list_export_path)
-
 def main(args: argparse.Namespace):
     print(args)
 
@@ -90,13 +54,15 @@ def main(args: argparse.Namespace):
     assert llm.llm_engine.model_config.max_model_len >= (
         args.input_len +
         args.output_len), ("Please ensure that max_model_len is greater than"
-                           " the sum of input_len and output_len.")
+                           " the sum of input_len and output_len."
+                           f" max_model_len: {llm.llm_engine.model_config.max_model_len}, "
+                           f" input_len: {args.input_len}, output_len: {args.output_len}")
 
     sampling_params = SamplingParams(
         n=args.n,
         temperature=0,
         top_p=1.0,
-        ignore_eos=True,
+        ignore_eos=False,
         max_tokens=args.output_len,
         detokenize=not args.disable_detokenize,
     )
@@ -113,49 +79,56 @@ def main(args: argparse.Namespace):
             if "prompt_token_ids" in request.prompt else \
             TextPrompt(prompt=request.prompt,
                        multi_modal_data=request.multi_modal_data))
+        
+    export_auto_tuner_flag_path = \
+        os.getenv("EXPORT_AUTO_TUNER_FLAG_PATH", "EXPORT_AUTO_TUNER_FLAG")
+    clear_auto_tuner_flag_path = \
+        os.getenv("CLEAR_AUTO_TUNER_FLAG_PATH", "CLEAR_AUTO_TUNER_FLAG")
+    
+    def clear_auto_tuner_controls():
+        if os.path.exists(export_auto_tuner_flag_path):
+            os.remove(export_auto_tuner_flag_path)
+        if os.path.exists(clear_auto_tuner_flag_path):
+            os.remove(clear_auto_tuner_flag_path)
 
+    def collect_auto_tuner_stats():
+        sampling_params_collect = SamplingParams(
+            n=1,
+            max_tokens=105,
+            detokenize=not args.disable_detokenize,
+        )
+        torch.save([], export_auto_tuner_flag_path)
+        torch.save([], clear_auto_tuner_flag_path)
+        print (g_str("Collecting Auto Tuner stats..."))
+        llm.generate(
+            prompts[0],
+            sampling_params=sampling_params_collect,
+            use_tqdm=False,
+        )
+        clear_auto_tuner_controls()
+        
     def llm_generate():
-        if(args.iterate_requests):
-            # Iterate through the requests in the dataset
-            print (y_str("Iterating through the requests in the dataset"))
-            for prompt in prompts:
-                if not args.use_beam_search:
-                    outputs = llm.generate(
-                        prompt,
-                        sampling_params=sampling_params,
-                        use_tqdm=False,
-                    )
-                else:
-                    outputs = llm.beam_search(
-                        prompt,
-                        BeamSearchParams(
-                            beam_width=args.n,
-                            max_tokens=args.output_len,
-                            ignore_eos=True,
-                        ),
-                    )
-                for output in outputs:
-                    for text_output in output.outputs:
-                        gen_text = text_output.text
-                        # print(y_str("\tPrompt: ") + f"{output.prompt!r}\n"
-                        #     + y_str("\tResponse: ") + f"{gen_text!r}")
-                collect_acceptance_rates()
-                
+        if not args.use_beam_search:
+            outputs = llm.generate(
+                prompts,
+                sampling_params=sampling_params,
+                use_tqdm=False,
+            )
         else:
-            if not args.use_beam_search:
-                llm.generate(prompts,
-                            sampling_params=sampling_params,
-                            use_tqdm=False)
-            else:
-                llm.beam_search(
-                    prompts,
-                    BeamSearchParams(
-                        beam_width=args.n,
-                        max_tokens=args.output_len,
-                        ignore_eos=True,
-                    ),
-                )
-
+            outputs = llm.beam_search(
+                prompts,
+                BeamSearchParams(
+                    beam_width=args.n,
+                    max_tokens=args.output_len,
+                    ignore_eos=True,
+                ),
+            )
+        # for output in outputs:
+        #     for text_output in output.outputs:
+        #         gen_text = text_output.text
+        #         print(y_str("\tPrompt: ") + f"{output.prompt!r}\n"
+        #             + y_str("\tResponse: ") + f"{gen_text!r}")
+        
     def run_to_completion(profile_dir: Optional[str] = None):
         if profile_dir:
             with torch.profiler.profile(
@@ -175,10 +148,11 @@ def main(args: argparse.Namespace):
             latency = end_time - start_time
             return latency
 
+    clear_auto_tuner_controls()
     print("Warming up...")
     for _ in tqdm(range(args.num_iters_warmup), desc="Warmup iterations"):
         run_to_completion(profile_dir=None)
-
+    
     if args.profile:
         profile_dir = args.profile_result_dir
         if not profile_dir:
@@ -192,6 +166,7 @@ def main(args: argparse.Namespace):
     latencies = []
     for _ in tqdm(range(args.num_iters), desc="Profiling iterations"):
         latencies.append(run_to_completion(profile_dir=None))
+    collect_auto_tuner_stats()
     latencies = np.array(latencies)
     percentages = [10, 25, 50, 75, 90, 99]
     percentiles = np.percentile(latencies, percentages)
@@ -265,12 +240,6 @@ if __name__ == "__main__":
         choices=["sharegpt", "random", "sonnet", "burstgpt", "hf"],
         help="Name of the dataset to benchmark on.",
         default="sharegpt")
-    parser.add_argument(
-        "--iterate-requests",
-        action="store_true",
-        help="Iterate through the requests in the dataset instead of "
-        "batching them.",
-    )
     # random dataset
     parser.add_argument(
         "--random-range-ratio",

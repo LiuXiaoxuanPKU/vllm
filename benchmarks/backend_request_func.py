@@ -64,6 +64,7 @@ async def async_request_tgi(
             "top_p": 0.99,  # TGI does not accept 1.0 top_p.
             "truncate": request_func_input.prompt_len,
             "ignore_eos_token": request_func_input.ignore_eos,
+            "repetition_penalty": 1.0,
         }
         payload = {
             "inputs": request_func_input.prompt,
@@ -497,3 +498,9 @@ ASYNC_REQUEST_FUNCS = {
     "scalellm": async_request_openai_completions,
     "sglang": async_request_openai_completions,
 }
+
+OPENAI_COMPATIBLE_BACKENDS = [
+    k for k, v in ASYNC_REQUEST_FUNCS.items()
+    if v in (async_request_openai_completions,
+             async_request_openai_chat_completions)
+]

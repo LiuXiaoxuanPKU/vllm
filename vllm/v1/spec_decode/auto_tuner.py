@@ -64,12 +64,13 @@ class AutoTuner:
         self.timer = AutoTunerTimer(track_goodput=self.track_goodput)
 
     def get_verified_len(self, batch_size: int, match_cnt: int,
-                         num_kv_tokens: int, max_draft_len: int) -> int:
+                         num_kv_tokens: int, num_scheduled_tokens: int,
+                         max_draft_len: int) -> int:
         best_verified_len = 0
         max_goodput = -1.0
         for i in range(max_draft_len + 1):
             cur_goodput, draft_time, target_time = self._predict_goodput(
-                batch_size, match_cnt, num_kv_tokens, i)
+                batch_size, match_cnt, num_kv_tokens, num_scheduled_tokens, i)
             rank_print(
                 f"Goodput for k={i}: {cur_goodput:.2f},",
                 f"batch_size: {batch_size},",
@@ -103,43 +104,80 @@ class AutoTuner:
         else:
             raise ValueError(f"Unknown proposer type: {type(proposer)}")
 
-    def adjust_draft_len(self, req_states: dict[str, CachedRequestState],
-                         draft_token_ids: list[list[int]]):
+    def adjust_verify_len(self, requests: dict[str, CachedRequestState],
+                          scheduler_output: SchedulerOutput):
         """
-        Adjust the draft length based on the verified length.
+        Adjust the verify length. This function will modify the 
+        scheduled_spec_decode_tokens/total_num_scheduled_tokens/total_num_scheduled_tokens
+        in the scheduler output.
         """
+        skip_adjust = False
+
         if self.fixed_len:
-            return draft_token_ids
+            skip_adjust = True
+
+        if len(scheduler_output.scheduled_spec_decode_tokens) == 0:
+            skip_adjust = True
 
         if self.step_cnt % self.update_interval != 0:
             # We don't truncate the draft length here
             # because we assume the user calls the get proposed len
             # to avoid proposing extra tokens.
-            return draft_token_ids
+            skip_adjust = True
+
+        if skip_adjust:
+            return
 
         # Calculate parameters used for goodput prediction.
         num_kv_tokens = 0
-        for req_id in req_states:
-            num_kv_tokens += req_states[req_id].num_tokens
-        batch_size = len(draft_token_ids)
-        lengths = [len(draft) for draft in draft_token_ids if draft]
+        num_compute_tokens_wo_spec = 0
+        max_draft_len = 0
+        batch_size = len(scheduler_output.num_scheduled_tokens)
+        for req_id, num_scheduled_tokens in scheduler_output.num_scheduled_tokens.items(
+        ):
+            request = requests[req_id]
+            num_kv_tokens += request.num_tokens
+            num_spec_tokens = len(
+                scheduler_output.scheduled_spec_decode_tokens.get(req_id, []))
+            num_compute_tokens_wo_spec += num_scheduled_tokens - num_spec_tokens
+            max_draft_len = max(max_draft_len, num_spec_tokens)
 
-        match_cnt = len(lengths)
-        max_draft_len = max(lengths, default=0)
-
+        match_cnt = len(scheduler_output.scheduled_spec_decode_tokens)
         self.total_cnt += batch_size
         self.match_cnt += match_cnt
         self.past_match_ratios.append(match_cnt * 1.0 / (batch_size))
 
         # Use goodput prediction to get the verified length.
         verified_len = self.get_verified_len(batch_size, match_cnt,
-                                             num_kv_tokens, max_draft_len)
+                                             num_kv_tokens,
+                                             num_compute_tokens_wo_spec,
+                                             max_draft_len)
 
-        draft_token_ids = [draft[:verified_len] for draft in draft_token_ids]
-        return draft_token_ids
+        # Update the scheduler output.
+        total_num_scheduled_tokens = scheduler_output.total_num_scheduled_tokens
+        for req_id, num_scheduled_tokens in scheduler_output.num_scheduled_tokens.items(
+        ):
+            request = requests[req_id]
+            num_spec_tokens = len(
+                scheduler_output.scheduled_spec_decode_tokens.get(req_id, []))
+            # We need to truncate the draft length
+            # to the verified length.
+            if num_spec_tokens > verified_len:
+                scheduler_output.scheduled_spec_decode_tokens[req_id] = \
+                    scheduler_output.scheduled_spec_decode_tokens[req_id][:verified_len]
+                num_scheduled_tokens -= (num_spec_tokens - verified_len)
+                total_num_scheduled_tokens -= (num_spec_tokens - verified_len)
+                scheduler_output.num_scheduled_tokens[
+                    req_id] = num_scheduled_tokens
+        scheduler_output.total_num_scheduled_tokens = total_num_scheduled_tokens
 
     def update_stats(self, acceptance_rate: torch.tensor):
         self.step_cnt += 1
+        if torch.isnan(acceptance_rate).any():
+            rank_print("Acceptance rate is NaN. Skipping update.",
+                       f"Step {self.step_cnt}",
+                       f"Acceptance rate: {acceptance_rate}")
+            return
         self.past_acceptance_rates.append(acceptance_rate)
         # if get_tensor_model_parallel_rank() == 0:
         #     if self.step_cnt % 20 == 0:
@@ -180,7 +218,7 @@ class AutoTuner:
             match_cnt = len(lengths)
             predicted_target_time = self._predict_target_time(
                 self.timer.batch_size, match_cnt, self.timer.num_kv_tokens,
-                self.last_verified_len)
+                self.timer.num_compute_tokens_wo_spec, self.last_verified_len)
             predicted_draft_time = self._predict_draft_time(
                 predicted_target_time)
             predicted_overhead = self._predict_overhead(predicted_target_time)
@@ -217,7 +255,7 @@ class AutoTuner:
         return sum(window_acceptance_rates) / (len(window_acceptance_rates))
 
     def _predict_goodput(self, batch_size: int, match_cnt: int,
-                         num_kv_tokens: int,
+                         num_kv_tokens: int, num_scheduled_tokens: int,
                          verified_len: int) -> tuple[float, float, float]:
         """
         Predict the goodput for a given verified length.
@@ -225,7 +263,9 @@ class AutoTuner:
         generated_len = self._predict_generated_len(batch_size, match_cnt,
                                                     verified_len)
         target_time = self._predict_target_time(batch_size, match_cnt,
-                                                num_kv_tokens, verified_len)
+                                                num_kv_tokens,
+                                                num_scheduled_tokens,
+                                                verified_len)
         overhead = self._predict_overhead(target_time)
         draft_time = self._predict_draft_time(target_time)
         batch_time = draft_time + target_time + overhead
@@ -242,12 +282,14 @@ class AutoTuner:
         return self.draft_percentage * target_time
 
     def _predict_target_time(self, batch_size: int, match_cnt: int,
-                             num_kv_tokens: int, verified_len: int) -> float:
+                             num_kv_tokens: int, num_scheduled_tokens: int,
+                             verified_len: int) -> float:
         # Computation time
         # +1 for the input token.
         num_batched_tokens = match_cnt * (verified_len + 1) + (batch_size -
                                                                match_cnt)
 
+        num_batched_tokens += num_scheduled_tokens
         target_time = (self.target_c_kv * num_kv_tokens +
                        self.target_c_compute * num_batched_tokens +
                        self.target_c_batch_size * batch_size +
@@ -311,6 +353,11 @@ class AutoTunerTimer:
 
         self.batch_size = len(requests)
         self.num_compute_tokens = scheduler_output.total_num_scheduled_tokens
+        self.num_compute_tokens_wo_spec = self.num_compute_tokens
+        for req_id in scheduler_output.scheduled_spec_decode_tokens:
+            self.num_compute_tokens_wo_spec -= len(
+                scheduler_output.scheduled_spec_decode_tokens[req_id])
+
         self.num_kv_tokens = 0
         for req_id in requests:
             self.num_kv_tokens += requests[req_id].num_tokens

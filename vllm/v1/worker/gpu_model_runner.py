@@ -157,8 +157,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
 
         # Set up speculative decoding.
         self.use_spec_decode = False
-        self.auto_tuner = AutoTuner(fixed_len=False, 
-                                    track_goodput=True)
+        self.auto_tuner = AutoTuner(fixed_len=False, track_goodput=False)
         if self.speculative_config:
             self.use_spec_decode = True
             self.auto_tuner.num_spec_tokens = self.speculative_config.num_speculative_tokens
@@ -996,6 +995,9 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         else:
             encoder_outputs = []
 
+        spec_token_ids = self.auto_tuner.adjust_verify_len(
+            self.requests, scheduler_output)
+
         # Prepare the decoder inputs.
         attn_metadata, logits_indices, spec_decode_metadata = (
             self._prepare_inputs(scheduler_output))
@@ -1272,8 +1274,6 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             else:
                 draft_token_ids.append(drafter_output.tolist())
 
-        draft_token_ids = self.auto_tuner.adjust_draft_len(
-            self.requests, draft_token_ids)
         return draft_token_ids
 
     def load_model(self) -> None:

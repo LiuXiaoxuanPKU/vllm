@@ -30,6 +30,7 @@ dataset_datapath_list = [
     # ["hf", "likaixin/InstructCoder"],
 ]
 spec_config_list = [
+    None,
     """
     {
         "model": "ngram",
@@ -55,7 +56,7 @@ spec_config_list = [
     # }
     # """
 ]
-batch_size = 4
+batch_size = 256
 output_len_list = [512]
 output_dir = f"auto_tuner_bench_latency_output_{str(int(time.time()))[-8:]}"
 os.makedirs(output_dir, exist_ok=True)
@@ -72,7 +73,7 @@ def clear_auto_tuner_controls(auto_tuner_stat_path):
 
 for tp_model, dataset_datapath, spec_config, output_len in \
     product(tp_model_list, dataset_datapath_list, spec_config_list, output_len_list):
-    
+    benchmark_output_path = f"{output_dir}/benchmark_output.json"
     random_num = str(random.randint(100000, 999999))
     auto_tuner_stat_path = f"{output_dir}/auto_tuner_stats_{random_num}.pt"
     clear_auto_tuner_controls(auto_tuner_stat_path)
@@ -93,7 +94,9 @@ for tp_model, dataset_datapath, spec_config, output_len in \
         f"--model {model} "\
         f"--dataset-name {dataset} "\
         f"--dataset-path {datapath} "\
-        f"--speculative-config '{spec_config}' "
+        f"--output-json {benchmark_output_path} "
+    if spec_config is not None:
+        benchmark_cmd += f"--speculative-config '{spec_config}' "
     print(g_str("Running command: ") + benchmark_cmd)
     bench = subprocess.Popen(benchmark_cmd, shell=True, 
                               stdout=sys.stdout, stderr=sys.stderr,
@@ -112,14 +115,24 @@ for tp_model, dataset_datapath, spec_config, output_len in \
         benchmark_success = False
     else:
         auto_tuner_stats = torch.load(auto_tuner_stat_path)
-    time_str = str(int(time.time()))[-8:]
-    random_num = str(random.randint(100000, 999999))
-    output_path = f"{output_dir}/auto_tuner_output_{time_str}_{random_num}.pt"
+    if not os.path.exists(benchmark_output_path):
+        print(r_str("Benchmark output file not found!"))
+        benchmark_output = {}
+        benchmark_success = False    
+    else:
+        with open(benchmark_output_path, "r") as f:
+                benchmark_output = json.load(f)
+        
+    time_str = str(int(time.time()))[-6:]
+    random_num = str(random.randint(10000, 99999))
+    output_path = f"{output_dir}/bench_latency_output_{time_str}_{random_num}.pt"
     while os.path.exists(output_path):
-        random_num = str(random.randint(100000, 999999))
+        random_num = str(random.randint(10000, 99999))
         output_path = \
-             f"{output_dir}/auto_tuner_output_{time_str}_{random_num}.pt"
+             f"{output_dir}/bench_latency_output_{time_str}_{random_num}.pt"
+             
     data = {
+        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
         "model": model,
         "dataset": dataset,
         "dataset_path": datapath,
@@ -127,10 +140,11 @@ for tp_model, dataset_datapath, spec_config, output_len in \
         "spec_config": spec_config,
         "output_len": output_len,
         "benchmark_success": benchmark_success,
+        "benchmark_output": benchmark_output,
         "auto_tuner_stats": auto_tuner_stats,
     }
     # print(data)
     torch.save(data, output_path)
-    print(g_str("Auto tuner benchmark data saved to: ") + output_path)
+    print(g_str("Bench_latency data saved to: ") + output_path)
     if os.path.exists(auto_tuner_stat_path):
         os.remove(auto_tuner_stat_path)

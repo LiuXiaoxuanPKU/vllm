@@ -14,6 +14,7 @@ def b_str(s):
     return "\033[94m" + str(s) + "\033[0m"
 
 num_prompts = int(sys.argv[1])
+output_path = sys.argv[2]
 num_datasets = 4
 request_rate_list = torch.tensor([1.0, 4.0, 8.0])
 
@@ -38,4 +39,4 @@ for i, request_rate in enumerate(request_rate_list):
         trace.append((dataset_id, interval))
         
 print (g_str("trace: ") + str(trace))
-torch.save(trace, "test_trace.pt")
+torch.save(trace, output_path)

@@ -94,7 +94,7 @@ def main(args: argparse.Namespace):
     def collect_auto_tuner_stats():
         sampling_params_collect = SamplingParams(
             n=1,
-            max_tokens=101,
+            max_tokens=105,
             detokenize=not args.disable_detokenize,
         )
         torch.save([], export_auto_tuner_flag_path)

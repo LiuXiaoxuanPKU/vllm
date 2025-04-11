@@ -70,10 +70,10 @@ def b_str(s):
     return "\033[94m" + str(s) + "\033[0m"
 
 dataset_datapath_list = [
-    ["hf", "AI-MO/aimo-validation-aime"],
+    # ["hf", "AI-MO/aimo-validation-aime"],
     ["sonnet", "/data/js_park/vllm_dsd/benchmarks/sonnet.txt"],
-    ["sharegpt", "/data/js_park/vllm_dsd/ShareGPT_V3_unfiltered_cleaned_split.json"],
-    ["hf", "likaixin/InstructCoder"],
+    # ["sharegpt", "/data/js_park/vllm_dsd/ShareGPT_V3_unfiltered_cleaned_split.json"],
+    # ["hf", "likaixin/InstructCoder"],
 ]
 
 @dataclass

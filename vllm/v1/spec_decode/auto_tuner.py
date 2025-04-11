@@ -92,7 +92,7 @@ class AutoTuner:
         # reset every update interval
         if self.step_cnt % self.update_interval == 0:
             self._set_proposer(proposer, self.num_spec_tokens)
-        elif self.last_verified_len > 0:
+        elif self.last_verified_len >= 0:
             self._set_proposer(proposer, self.last_verified_len)
 
     def _set_proposer(self, proposer: NgramProposer | EagleProposer,
@@ -104,8 +104,8 @@ class AutoTuner:
         else:
             raise ValueError(f"Unknown proposer type: {type(proposer)}")
 
-    def adjust_verify_len(self, requests: dict[str, CachedRequestState],
-                          scheduler_output: SchedulerOutput):
+    def set_verify_len(self, requests: dict[str, CachedRequestState],
+                       scheduler_output: SchedulerOutput):
         """
         Adjust the verify length. This function will modify the 
         scheduled_spec_decode_tokens/total_num_scheduled_tokens/total_num_scheduled_tokens

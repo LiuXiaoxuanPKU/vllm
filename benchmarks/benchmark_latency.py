@@ -23,12 +23,19 @@ from vllm.inputs import TextPrompt, TokensPrompt
 from vllm.sampling_params import BeamSearchParams
 from vllm.utils import FlexibleArgumentParser
 
+
 def r_str(s):
     return "\033[91m" + str(s) + "\033[0m"
+
+
 def g_str(s):
     return "\033[92m" + str(s) + "\033[0m"
+
+
 def y_str(s):
     return "\033[93m" + str(s) + "\033[0m"
+
+
 def b_str(s):
     return "\033[94m" + str(s) + "\033[0m"
 
@@ -43,9 +50,12 @@ def save_to_pytorch_benchmark_format(args: argparse.Namespace,
     if pt_records:
         pt_file = f"{os.path.splitext(args.output_json)[0]}.pytorch.json"
         write_to_json(pt_file, pt_records)
-        
+
+
 first_execution_of_collect_acceptance_rates = True
 pre_acceptance_rate_len = 0
+
+
 def collect_acceptance_rates():
     acceptance_export_path = "acceptance_rate_tmp.pt"
     acceptance_list_export_path = "acceptance_rates_per_req.pt"
@@ -55,7 +65,7 @@ def collect_acceptance_rates():
         acceptance_rates = torch.load(acceptance_export_path)
     else:
         acceptance_rates = []
-    # print(y_str("Found acceptance rate file of length ") + 
+    # print(y_str("Found acceptance rate file of length ") +
     #       f"{len(acceptance_rates)}, " +
     #       y_str("previous acceptance rate file length ") +
     #       f"{pre_acceptance_rate_len} ")
@@ -71,13 +81,13 @@ def collect_acceptance_rates():
         for i in range(len(acceptance_rates_torch))]
     pre_acceptance_rate_len = new_pre_acceptance_rate_len
     acceptance_list.append(acceptance_rates)
-    print(b_str("Saving acceptance rate list of length ") +
-          f"{len(acceptance_list)} " +
-          b_str("to ") +
-          f"{acceptance_list_export_path}, " +
-          b_str("appended new req of length ") +
-          f"{len(acceptance_list[-1])} ")
+    print(
+        b_str("Saving acceptance rate list of length ") +
+        f"{len(acceptance_list)} " + b_str("to ") +
+        f"{acceptance_list_export_path}, " +
+        b_str("appended new req of length ") + f"{len(acceptance_list[-1])} ")
     torch.save(acceptance_list, acceptance_list_export_path)
+
 
 def main(args: argparse.Namespace):
     print(args)
@@ -104,7 +114,7 @@ def main(args: argparse.Namespace):
 
     tokenizer = AutoTokenizer.from_pretrained(
         args.tokenizer, trust_remote_code=args.trust_remote_code)
-    
+
     for batch_size in [1, 2, 4, 8, 16, 32, 64, 128, 256]:
         print("----------------------------------")
         print(f"Batch size: {batch_size}")
@@ -119,9 +129,9 @@ def main(args: argparse.Namespace):
                         multi_modal_data=request.multi_modal_data))
 
         def llm_generate():
-            if(args.iterate_requests):
+            if (args.iterate_requests):
                 # Iterate through the requests in the dataset
-                print (y_str("Iterating through the requests in the dataset"))
+                print(y_str("Iterating through the requests in the dataset"))
                 for prompt in prompts:
                     if not args.use_beam_search:
                         outputs = llm.generate(
@@ -144,12 +154,12 @@ def main(args: argparse.Namespace):
                             # print(y_str("\tPrompt: ") + f"{output.prompt!r}\n"
                             #     + y_str("\tResponse: ") + f"{gen_text!r}")
                     collect_acceptance_rates()
-                    
+
             else:
                 if not args.use_beam_search:
                     llm.generate(prompts,
-                                sampling_params=sampling_params,
-                                use_tqdm=False)
+                                 sampling_params=sampling_params,
+                                 use_tqdm=False)
                 else:
                     llm.beam_search(
                         prompts,
@@ -167,8 +177,8 @@ def main(args: argparse.Namespace):
                             torch.profiler.ProfilerActivity.CPU,
                             torch.profiler.ProfilerActivity.CUDA,
                         ],
-                        on_trace_ready=torch.profiler.tensorboard_trace_handler(
-                            str(profile_dir)),
+                        on_trace_ready=torch.profiler.
+                        tensorboard_trace_handler(str(profile_dir)),
                 ) as p:
                     llm_generate()
                 print(p.key_averages().table(sort_by="self_cuda_time_total"))
@@ -187,7 +197,7 @@ def main(args: argparse.Namespace):
             profile_dir = args.profile_result_dir
             if not profile_dir:
                 profile_dir = (Path(".") / "vllm_benchmark_result" /
-                            f"latency_result_{time.time()}")
+                               f"latency_result_{time.time()}")
             print(f"Profiling (results will be saved to '{profile_dir}')...")
             run_to_completion(profile_dir=profile_dir)
             return

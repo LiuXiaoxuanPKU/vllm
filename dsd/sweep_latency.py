@@ -1,8 +1,9 @@
+# SPDX-License-Identifier: Apache-2.0
 import os
+import subprocess
 import sys
 import time
 from itertools import product
-import subprocess
 
 
 def r_str(s):
@@ -34,16 +35,39 @@ dataset_datapath_list = [
     # ["hf", "likaixin/InstructCoder"],
 ]
 spec_config_list = [
-    "",
-    # """
-    # {
-    #     "model": "ngram",
-    #     "prompt_lookup_max": 7,
-    #     "prompt_lookup_min": 3,
-    #     "num_speculative_tokens": 20,
-    #     "dsd": true
-    # }
-    # """
+    "", """
+    {
+        "model": "ngram",
+        "prompt_lookup_max": 7,
+        "prompt_lookup_min": 3,
+        "num_speculative_tokens": 20,
+        "dsd": true
+    }
+    """, """
+    {
+        "model": "ngram",
+        "prompt_lookup_max": 7,
+        "prompt_lookup_min": 3,
+        "num_speculative_tokens": 1,
+        "dsd": false
+    }
+    """, """
+    {
+        "model": "ngram",
+        "prompt_lookup_max": 7,
+        "prompt_lookup_min": 3,
+        "num_speculative_tokens": 3,
+        "dsd": false
+    }
+    """, """
+    {
+        "model": "ngram",
+        "prompt_lookup_max": 7,
+        "prompt_lookup_min": 3,
+        "num_speculative_tokens": 5,
+        "dsd": false
+    }
+    """
 ]
 
 batch_size = 1  # This is a placeholder

@@ -104,111 +104,116 @@ def main(args: argparse.Namespace):
 
     tokenizer = AutoTokenizer.from_pretrained(
         args.tokenizer, trust_remote_code=args.trust_remote_code)
-    requests = get_requests(args.batch_size, args, tokenizer)
-    prompts: list[Union[TextPrompt, TokensPrompt]] = []
-    for request in requests:
-        prompts.append(
-            TokensPrompt(prompt_token_ids=request.prompt["prompt_token_ids"],
-                       multi_modal_data=request.multi_modal_data)
-            if "prompt_token_ids" in request.prompt else \
-            TextPrompt(prompt=request.prompt,
-                       multi_modal_data=request.multi_modal_data))
+    
+    for batch_size in [1, 2, 4, 8, 16, 32, 64, 128, 256]:
+        print("----------------------------------")
+        print(f"Batch size: {batch_size}")
+        requests = get_requests(batch_size, args, tokenizer)
+        prompts: list[Union[TextPrompt, TokensPrompt]] = []
+        for request in requests:
+            prompts.append(
+                TokensPrompt(prompt_token_ids=request.prompt["prompt_token_ids"],
+                        multi_modal_data=request.multi_modal_data)
+                if "prompt_token_ids" in request.prompt else \
+                TextPrompt(prompt=request.prompt,
+                        multi_modal_data=request.multi_modal_data))
 
-    def llm_generate():
-        if(args.iterate_requests):
-            # Iterate through the requests in the dataset
-            print (y_str("Iterating through the requests in the dataset"))
-            for prompt in prompts:
+        def llm_generate():
+            if(args.iterate_requests):
+                # Iterate through the requests in the dataset
+                print (y_str("Iterating through the requests in the dataset"))
+                for prompt in prompts:
+                    if not args.use_beam_search:
+                        outputs = llm.generate(
+                            prompt,
+                            sampling_params=sampling_params,
+                            use_tqdm=False,
+                        )
+                    else:
+                        outputs = llm.beam_search(
+                            prompt,
+                            BeamSearchParams(
+                                beam_width=args.n,
+                                max_tokens=args.output_len,
+                                ignore_eos=True,
+                            ),
+                        )
+                    for output in outputs:
+                        for text_output in output.outputs:
+                            gen_text = text_output.text
+                            # print(y_str("\tPrompt: ") + f"{output.prompt!r}\n"
+                            #     + y_str("\tResponse: ") + f"{gen_text!r}")
+                    collect_acceptance_rates()
+                    
+            else:
                 if not args.use_beam_search:
-                    outputs = llm.generate(
-                        prompt,
-                        sampling_params=sampling_params,
-                        use_tqdm=False,
-                    )
+                    llm.generate(prompts,
+                                sampling_params=sampling_params,
+                                use_tqdm=False)
                 else:
-                    outputs = llm.beam_search(
-                        prompt,
+                    llm.beam_search(
+                        prompts,
                         BeamSearchParams(
                             beam_width=args.n,
                             max_tokens=args.output_len,
                             ignore_eos=True,
                         ),
                     )
-                for output in outputs:
-                    for text_output in output.outputs:
-                        gen_text = text_output.text
-                        # print(y_str("\tPrompt: ") + f"{output.prompt!r}\n"
-                        #     + y_str("\tResponse: ") + f"{gen_text!r}")
-                collect_acceptance_rates()
-                
-        else:
-            if not args.use_beam_search:
-                llm.generate(prompts,
-                            sampling_params=sampling_params,
-                            use_tqdm=False)
+
+        def run_to_completion(profile_dir: Optional[str] = None):
+            if profile_dir:
+                with torch.profiler.profile(
+                        activities=[
+                            torch.profiler.ProfilerActivity.CPU,
+                            torch.profiler.ProfilerActivity.CUDA,
+                        ],
+                        on_trace_ready=torch.profiler.tensorboard_trace_handler(
+                            str(profile_dir)),
+                ) as p:
+                    llm_generate()
+                print(p.key_averages().table(sort_by="self_cuda_time_total"))
             else:
-                llm.beam_search(
-                    prompts,
-                    BeamSearchParams(
-                        beam_width=args.n,
-                        max_tokens=args.output_len,
-                        ignore_eos=True,
-                    ),
-                )
-
-    def run_to_completion(profile_dir: Optional[str] = None):
-        if profile_dir:
-            with torch.profiler.profile(
-                    activities=[
-                        torch.profiler.ProfilerActivity.CPU,
-                        torch.profiler.ProfilerActivity.CUDA,
-                    ],
-                    on_trace_ready=torch.profiler.tensorboard_trace_handler(
-                        str(profile_dir)),
-            ) as p:
+                start_time = time.perf_counter()
                 llm_generate()
-            print(p.key_averages().table(sort_by="self_cuda_time_total"))
-        else:
-            start_time = time.perf_counter()
-            llm_generate()
-            end_time = time.perf_counter()
-            latency = end_time - start_time
-            return latency
+                end_time = time.perf_counter()
+                latency = end_time - start_time
+                return latency
 
-    print("Warming up...")
-    for _ in tqdm(range(args.num_iters_warmup), desc="Warmup iterations"):
-        run_to_completion(profile_dir=None)
+        print("Warming up...")
+        for _ in tqdm(range(args.num_iters_warmup), desc="Warmup iterations"):
+            run_to_completion(profile_dir=None)
 
-    if args.profile:
-        profile_dir = args.profile_result_dir
-        if not profile_dir:
-            profile_dir = (Path(".") / "vllm_benchmark_result" /
-                           f"latency_result_{time.time()}")
-        print(f"Profiling (results will be saved to '{profile_dir}')...")
-        run_to_completion(profile_dir=profile_dir)
-        return
+        if args.profile:
+            profile_dir = args.profile_result_dir
+            if not profile_dir:
+                profile_dir = (Path(".") / "vllm_benchmark_result" /
+                            f"latency_result_{time.time()}")
+            print(f"Profiling (results will be saved to '{profile_dir}')...")
+            run_to_completion(profile_dir=profile_dir)
+            return
 
-    # Benchmark.
-    latencies = []
-    for _ in tqdm(range(args.num_iters), desc="Profiling iterations"):
-        latencies.append(run_to_completion(profile_dir=None))
-    latencies = np.array(latencies)
-    percentages = [10, 25, 50, 75, 90, 99]
-    percentiles = np.percentile(latencies, percentages)
-    print(f"Avg latency: {np.mean(latencies)} seconds")
-    for percentage, percentile in zip(percentages, percentiles):
-        print(f"{percentage}% percentile latency: {percentile} seconds")
+        # Benchmark.
+        latencies = []
+        for _ in tqdm(range(args.num_iters), desc="Profiling iterations"):
+            latencies.append(run_to_completion(profile_dir=None))
+        latencies = np.array(latencies)
+        percentages = [10, 25, 50, 75, 90, 99]
+        percentiles = np.percentile(latencies, percentages)
+        print(f"Avg latency: {np.mean(latencies)} seconds")
+        for percentage, percentile in zip(percentages, percentiles):
+            print(f"{percentage}% percentile latency: {percentile} seconds")
 
-    # Output JSON results if specified
-    if args.output_json:
-        results = {
-            "avg_latency": np.mean(latencies),
-            "latencies": latencies.tolist(),
-            "percentiles": dict(zip(percentages, percentiles.tolist())),
-        }
-        with open(args.output_json, "w") as f:
-            json.dump(results, f, indent=4)
-        save_to_pytorch_benchmark_format(args, results)
+        # Output JSON results if specified
+        if args.output_json:
+            results = {
+                "avg_latency": np.mean(latencies),
+                "latencies": latencies.tolist(),
+                "percentiles": dict(zip(percentages, percentiles.tolist())),
+                "batch_size": batch_size,
+            }
+            with open(args.output_json, "a") as f:
+                f.write(json.dumps(results) + "\n")
+            save_to_pytorch_benchmark_format(args, results)
 
 
 if __name__ == "__main__":

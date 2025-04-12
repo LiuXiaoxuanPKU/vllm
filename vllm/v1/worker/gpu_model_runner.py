@@ -166,10 +166,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             self.use_spec_decode = True
             self.auto_tuner.num_spec_tokens = \
                 self.speculative_config.num_speculative_tokens
-            if not hasattr(self.speculative_config, "dsd"):
-                self.auto_tuner.fixed_len = True
-            else:
-                self.auto_tuner.fixed_len = not self.speculative_config.dsd 
+            self.auto_tuner.fixed_len = not self.speculative_config.dsd 
             if not self.auto_tuner.fixed_len:
                 print("DSD is enabled...")
             if get_pp_group().is_last_rank:
@@ -1045,9 +1042,9 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             # embeddings), we always use embeddings (rather than token ids)
             # as input to the multimodal model, even when the input is text.
             input_ids = self.input_ids[:num_scheduled_tokens]
-            if mm_embeds:
+            if encoder_outputs:
                 inputs_embeds = self.model.get_input_embeddings(
-                    input_ids, mm_embeds)
+                    input_ids, encoder_outputs)
             else:
                 inputs_embeds = self.model.get_input_embeddings(input_ids)
             # TODO(woosuk): Avoid the copy. Optimize.
@@ -1135,7 +1132,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             )
             sampler_output.sampled_token_ids = output_token_ids
     
-        if self.auto_tuner is not None:
+        if self.use_spec_decode:
             # Stats are always updated when using speculative decoding.
             self.auto_tuner.update_stats(output_probs, self.input_batch.req_ids)
         
@@ -1261,6 +1258,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                     block_table=attn_metadata.block_table,
                     sampling_metadata=sampling_metadata,
                 )
+                self.auto_tuner.cur_draft_token_ids = draft_token_ids
                 spec_token_ids = draft_token_ids.tolist()
                 # TODO(woosuk): Cache draft_probs and use it for rejection sampling
                 # in the next step.
@@ -1284,11 +1282,11 @@ class GPUModelRunner(LoRAModelRunnerMixin):
     def generate_draft_token_ids(
         self,
         sampled_token_ids: list[list[int]],
+        sampling_metadata: SamplingMetadata,
     ) -> list[list[int]]:
         # TODO(woosuk): Optimize.
         draft_token_ids: list[list[int]] = []
         for i, sampled_ids in enumerate(sampled_token_ids):
-            
             num_sampled_ids = len(sampled_ids)
             if not num_sampled_ids:
                 # Skip speculative decoding.

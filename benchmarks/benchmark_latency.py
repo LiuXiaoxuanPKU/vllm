@@ -94,12 +94,27 @@ def main(args: argparse.Namespace):
     def collect_auto_tuner_stats():
         sampling_params_collect = SamplingParams(
             n=1,
-            max_tokens=105,
+            max_tokens=101,
             detokenize=not args.disable_detokenize,
         )
         torch.save([], export_auto_tuner_flag_path)
         torch.save([], clear_auto_tuner_flag_path)
         print (g_str("Collecting Auto Tuner stats..."))
+        llm.generate(
+            prompts[0],
+            sampling_params=sampling_params_collect,
+            use_tqdm=False,
+        )
+        clear_auto_tuner_controls()
+        
+    def reset_auto_tuner_stats():
+        sampling_params_collect = SamplingParams(
+            n=1,
+            max_tokens=101,
+            detokenize=not args.disable_detokenize,
+        )
+        torch.save([], clear_auto_tuner_flag_path)
+        print (g_str("Resetting Auto Tuner stats..."))
         llm.generate(
             prompts[0],
             sampling_params=sampling_params_collect,
@@ -161,12 +176,14 @@ def main(args: argparse.Namespace):
         print(f"Profiling (results will be saved to '{profile_dir}')...")
         run_to_completion(profile_dir=profile_dir)
         return
-
+    reset_auto_tuner_stats()
+    
     # Benchmark.
     latencies = []
     for _ in tqdm(range(args.num_iters), desc="Profiling iterations"):
         latencies.append(run_to_completion(profile_dir=None))
-    collect_auto_tuner_stats()
+        if _ == 0:
+            collect_auto_tuner_stats()
     latencies = np.array(latencies)
     percentages = [10, 25, 50, 75, 90, 99]
     percentiles = np.percentile(latencies, percentages)

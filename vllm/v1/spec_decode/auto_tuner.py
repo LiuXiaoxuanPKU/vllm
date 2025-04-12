@@ -16,6 +16,7 @@ from vllm import envs
 import torch
 import os
 import math
+import time
 from copy import deepcopy
 
 import triton.language as tl
@@ -43,6 +44,7 @@ class AutoTuner:
         
         self.per_req_history = {}
         self.cur_draft_token_ids = []
+        self.step_timestamps = []
 
         # config
         self.update_interval = 200
@@ -138,7 +140,6 @@ class AutoTuner:
                         "target_c_fixed": self.target_c_fixed,
                         "draft_percentage": self.draft_percentage,
                         "overhead_percentage": self.overhead_percentage,
-                        "num_spec_tokens": self.num_spec_tokens,
                         "fixed_len": self.fixed_len,
                         "track_goodput": self.track_goodput,
                         "num_spec_tokens": self.num_spec_tokens,
@@ -146,6 +147,7 @@ class AutoTuner:
                         "step_cnt": self.step_cnt,
                         "match_cnt": self.match_cnt,
                         "total_cnt": self.total_cnt,
+                        "step_timestamps": self.step_timestamps,
                         "past_acceptance_rates": self.past_acceptance_rates,
                         "past_match_ratios": self.past_match_ratios,
                         "per_req_history": self.per_req_history,                     
@@ -160,6 +162,7 @@ class AutoTuner:
                 if os.path.exists(envs.CLEAR_AUTO_TUNER_FLAG_PATH):
                     self.reset_stats() 
                     print(f"\033[91mAuto tuner stats reset.\033[0m ")
+        self.step_timestamps.append(time.time())
         self.step_cnt += 1
                 
     def get_verified_len(self, batch_size: int, match_cnt: int,
@@ -245,7 +248,6 @@ class AutoTuner:
         self.total_cnt += batch_size
         self.match_cnt += match_cnt
         self.past_match_ratios.append(match_cnt * 1.0 / (batch_size))
-        self.cur_draft_token_ids = draft_token_ids
 
         # Use goodput prediction to get the verified length.
         verified_len = self.get_verified_len(batch_size, match_cnt,
@@ -323,7 +325,7 @@ class AutoTuner:
     def acceptance_rate(self):
         window_acceptance_rates = self.past_acceptance_rates[-self.
                                                              window_size:]
-        if len(window_acceptance_rates) == 0:
+        if len(self.past_acceptance_rates) or len(window_acceptance_rates) == 0:
             return self.start_acceptance_rate
         return sum(window_acceptance_rates) / (len(window_acceptance_rates))
 

@@ -21,11 +21,11 @@ tp_model_list = [
     # [4, "meta-llama/Meta-Llama-3.1-70B-Instruct"],
     # [2, "Qwen/QwQ-32B"], 
     [1, "meta-llama/Meta-Llama-3.1-8B-Instruct"], 
-    [1, "Qwen/Qwen2.5-3B-Instruct"],
+    # [1, "Qwen/Qwen2.5-3B-Instruct"],
 ]
 dataset_datapath_list = [
     ["sonnet", "/data/js_park/vllm_dsd/benchmarks/sonnet.txt"],
-    ["sharegpt", "/data/js_park/vllm_dsd/ShareGPT_V3_unfiltered_cleaned_split.json"],
+    # ["sharegpt", "/data/js_park/vllm_dsd/ShareGPT_V3_unfiltered_cleaned_split.json"],
     # ["hf", "AI-MO/aimo-validation-aime"],
     # ["hf", "likaixin/InstructCoder"],
 ]
@@ -66,8 +66,9 @@ spec_config_list = [
     # }
     # """
 ]
-batch_size = 256
+batch_size_list = [128]
 output_len_list = [512]
+num_iter_list = [10]
 output_dir = f"auto_tuner_bench_latency_output_{str(int(time.time()))[-8:]}"
 os.makedirs(output_dir, exist_ok=True)
 export_auto_tuner_flag_path = f"{output_dir}/EXPORT_AUTO_TUNER_FLAG"
@@ -81,8 +82,9 @@ def clear_auto_tuner_controls(auto_tuner_stat_path):
     if os.path.exists(auto_tuner_stat_path):
         os.remove(auto_tuner_stat_path)
 
-for tp_model, dataset_datapath, spec_config, output_len in \
-    product(tp_model_list, dataset_datapath_list, spec_config_list, output_len_list):
+for tp_model, dataset_datapath, spec_config, output_len, batch_size, num_iter in \
+    product(tp_model_list, dataset_datapath_list, spec_config_list, 
+            output_len_list, batch_size_list, num_iter_list):
     benchmark_output_path = f"{output_dir}/benchmark_output.json"
     random_num = str(random.randint(100000, 999999))
     auto_tuner_stat_path = f"{output_dir}/auto_tuner_stats_{random_num}.pt"
@@ -97,7 +99,7 @@ for tp_model, dataset_datapath, spec_config, output_len in \
     # Run the benchmark script
     benchmark_cmd = \
         f"python3 benchmarks/benchmark_latency.py --enforce-eager "\
-        f"--num-iters-warmup 0 --num-iters 1 "\
+        f"--num-iters-warmup 3 --num-iters {num_iter} "\
         f"--output-len {output_len} "\
         f"--tensor-parallel-size {tp} "\
         f"--batch-size {batch_size} "\
@@ -112,8 +114,6 @@ for tp_model, dataset_datapath, spec_config, output_len in \
                               stdout=sys.stdout, stderr=sys.stderr,
                               preexec_fn=os.setsid)
     print(g_str("Latency benchmark is running with PID: ") + str(bench.pid))
-    # Wait for the benchmark to start
-    time.sleep(10)
     # Wait for the benchmark to finish
     stdout, stderr = bench.communicate()
     print(g_str("Benchmark finished"))

@@ -42,13 +42,12 @@ class AutoTuner:
         # some cached values
         self.last_verified_len = -1
 
-        # Llama70B, TP4, H100
+        # Llama70B, TP4, H100, ngram
         self.target_c_kv = 6.24369264e-05
         self.target_c_compute = 6.40216301e-02
         self.target_c_batch_size = -3.97382298e-02
         self.target_c_enable_spec_decode = -1.12291902e-01
         self.target_c_fixed = 18.34535
-
         self.draft_percentage = 0.04
         self.overhead_percentage = 0.05
 
@@ -69,11 +68,12 @@ class AutoTuner:
         best_verified_len = 0
         max_goodput = -1.0
         for i in range(max_draft_len + 1):
-            cur_goodput, draft_time, target_time = self._predict_goodput(
+            cur_goodput, draft_time, target_time, gen_len = self._predict_goodput(
                 batch_size, match_cnt, num_kv_tokens, num_scheduled_tokens, i)
             rank_print(
                 f"Goodput for k={i}: {cur_goodput:.2f},",
-                f"batch_size: {batch_size},",
+                f"batch_size: {batch_size},", f"Match count: {match_cnt},",
+                f"Generated len: {gen_len:.2f},",
                 f"Acceptance rate: {self.acceptance_rate:.2f},",
                 f"Global match ratio: {self.match_cnt / (self.total_cnt + 1e-5):.2f},",
                 f"draft_time: {draft_time:.2f}, target_time: {target_time:.2f}"
@@ -172,13 +172,17 @@ class AutoTuner:
                     req_id] = num_scheduled_tokens
         scheduler_output.total_num_scheduled_tokens = total_num_scheduled_tokens
 
-    def update_stats(self, acceptance_rate: torch.tensor):
+    def update_stats(self, acceptance_rate: torch.tensor,
+                     output_token_ids: torch.tensor):
         self.step_cnt += 1
         if torch.isnan(acceptance_rate).any():
             rank_print("Acceptance rate is NaN. Skipping update.",
                        f"Step {self.step_cnt}",
                        f"Acceptance rate: {acceptance_rate}")
             return
+        if self.step_cnt % self.update_interval == 0:
+            valid_mask = (output_token_ids != -1)
+            rank_print(valid_mask.sum(), "tokens generated in this step.")
         self.past_acceptance_rates.append(acceptance_rate)
         # if get_tensor_model_parallel_rank() == 0:
         #     if self.step_cnt % 20 == 0:
@@ -206,7 +210,7 @@ class AutoTuner:
     def end_execution(self, generated_token_ids: list[list[int]],
                       draft_token_ids: list[list[int]]):
         self.timer.end_execution()
-        if self.track_goodput:
+        if self.track_goodput and get_tensor_model_parallel_rank() == 0:
             draft_token_ids = draft_token_ids or []
             # Get the measured goodput.
             measured_gen_tokens = sum(
@@ -267,10 +271,14 @@ class AutoTuner:
                                                 num_kv_tokens,
                                                 num_scheduled_tokens,
                                                 verified_len)
-        overhead = self._predict_overhead(target_time)
-        draft_time = self._predict_draft_time(target_time)
+        if verified_len > 0:
+            overhead = self._predict_overhead(target_time)
+            draft_time = self._predict_draft_time(target_time)
+        else:
+            overhead = 0
+            draft_time = 0
         batch_time = draft_time + target_time + overhead
-        return generated_len * 1000 / batch_time, draft_time, target_time
+        return generated_len * 1000 / batch_time, draft_time, target_time, generated_len
 
     def _predict_generated_len(self, batch_size: int, match_cnt: int,
                                verified_len: int):

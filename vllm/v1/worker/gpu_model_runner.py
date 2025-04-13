@@ -157,8 +157,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
 
         # Set up speculative decoding.
         self.use_spec_decode = False
-        self.auto_tuner = AutoTuner(fixed_len=False, 
-                                    track_goodput=False)
+        self.auto_tuner = AutoTuner(fixed_len=False, track_goodput=False)
         if self.speculative_config:
             self.use_spec_decode = True
             self.auto_tuner.num_spec_tokens = self.speculative_config.num_speculative_tokens
@@ -1107,7 +1106,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 bonus_token_ids,
                 sampling_metadata,
             )
-            self.auto_tuner.update_stats(acceptance_rate)
+            self.auto_tuner.update_stats(acceptance_rate, output_token_ids)
             sampler_output.sampled_token_ids = output_token_ids
 
         # TODO(woosuk): The following loop can be slow since it iterates over
@@ -1186,13 +1185,14 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                         # Get the next token id from the request state.
                         req_id = self.input_batch.req_ids[i]
                         req_state = self.requests[req_id]
-                        seq_len = (req_state.num_computed_tokens +
-                                scheduler_output.num_scheduled_tokens[req_id])
+                        seq_len = (
+                            req_state.num_computed_tokens +
+                            scheduler_output.num_scheduled_tokens[req_id])
                         next_token_id = req_state.get_token_id(seq_len)
                     next_token_ids.append(next_token_id)
                 next_token_ids = torch.tensor(next_token_ids,
-                                            dtype=torch.int32,
-                                            device=self.device)
+                                              dtype=torch.int32,
+                                              device=self.device)
 
                 if spec_decode_metadata is None:
                     # input_ids can be None for multimodal models.
@@ -1220,7 +1220,8 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                     target_token_ids = self.input_ids[token_indices]
                     target_positions = positions[token_indices]
                     target_hidden_states = hidden_states[token_indices]
-                    target_slot_mapping = attn_metadata.slot_mapping[token_indices]
+                    target_slot_mapping = attn_metadata.slot_mapping[
+                        token_indices]
 
                 draft_token_ids, draft_probs = self.drafter.propose(
                     target_token_ids=target_token_ids,

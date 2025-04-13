@@ -2163,16 +2163,16 @@ class SpeculativeConfig:
                     hf_overrides=SpeculativeConfig.hf_config_override,
                 )
 
-                # Automatically detect the method
-                if "eagle-" in self.draft_model_config.model.lower():
-                    self.method = "eagle"
-                elif self.draft_model_config.hf_config.model_type == "medusa":
-                    self.method = "medusa"
-                elif (self.draft_model_config.hf_config.model_type ==
-                      "mlp_speculator"):
-                    self.method = "mlp_speculator"
-                else:
-                    self.method = "draft_model"
+                # # Automatically detect the method
+                # if "eagle-" in self.draft_model_config.model.lower():
+                #     self.method = "eagle"
+                # elif self.draft_model_config.hf_config.model_type == "medusa":
+                #     self.method = "medusa"
+                # elif (self.draft_model_config.hf_config.model_type ==
+                #       "mlp_speculator"):
+                #     self.method = "mlp_speculator"
+                # else:
+                # self.method = "draft_model"
 
                 # Replace hf_config for EAGLE draft_model
                 if self.method == "eagle":

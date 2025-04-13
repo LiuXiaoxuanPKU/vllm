@@ -8,6 +8,7 @@ import torch
 
 from vllm.distributed import get_tensor_model_parallel_rank
 from vllm.v1.core.sched.output import SchedulerOutput
+from vllm.v1.spec_decode.config import dsd_model_config
 from vllm.v1.spec_decode.eagle import EagleProposer
 from vllm.v1.spec_decode.ngram_proposer import NgramProposer
 from vllm.v1.worker.gpu_input_batch import CachedRequestState
@@ -22,7 +23,8 @@ def rank_print(*args, sep: str = " ", end: str = "\n"):
 class AutoTuner:
 
     def __init__(self,
-                 num_spec_tokens: int = 3,
+                 method: str,
+                 num_spec_tokens: int = -1,
                  fixed_len: bool = False,
                  track_goodput: bool = False):
         # Some tracking metrics
@@ -38,18 +40,12 @@ class AutoTuner:
         self.update_interval = 200
         self.window_size = 10000
         self.start_acceptance_rate = 0.8
+        model_name = "llama-8b-h100"
+        self.model_config = dsd_model_config[model_name]
+        self.method = method
 
         # some cached values
         self.last_verified_len = -1
-
-        # Llama70B, TP4, H100, ngram
-        self.target_c_kv = 6.24369264e-05
-        self.target_c_compute = 6.40216301e-02
-        self.target_c_batch_size = -3.97382298e-02
-        self.target_c_enable_spec_decode = -1.12291902e-01
-        self.target_c_fixed = 18.34535
-        self.draft_percentage = 0.04
-        self.overhead_percentage = 0.05
 
         # Should we use fixed length (turn off DSD)
         self.fixed_len = fixed_len
@@ -60,14 +56,16 @@ class AutoTuner:
         self.num_spec_tokens = num_spec_tokens
 
         # timer
-        self.timer = AutoTunerTimer(track_goodput=self.track_goodput)
+        self.timer = AutoTunerTimer(num_spec_tokens=num_spec_tokens,
+                                    track_goodput=self.track_goodput)
 
     def get_verified_len(self, batch_size: int, match_cnt: int,
                          num_kv_tokens: int, num_scheduled_tokens: int,
                          max_draft_len: int) -> int:
         best_verified_len = 0
         max_goodput = -1.0
-        for i in range(max_draft_len + 1):
+        start_verified_len = 0 if self.method == "ngram" else 1
+        for i in range(start_verified_len, max_draft_len + 1):
             cur_goodput, draft_time, target_time, gen_len = self._predict_goodput(
                 batch_size, match_cnt, num_kv_tokens, num_scheduled_tokens, i)
             rank_print(
@@ -225,7 +223,9 @@ class AutoTuner:
                 self.timer.batch_size, match_cnt, self.timer.num_kv_tokens,
                 self.timer.num_compute_tokens_wo_spec, self.last_verified_len)
             predicted_draft_time = self._predict_draft_time(
-                predicted_target_time)
+                predicted_target_time, self.timer.num_kv_tokens,
+                self.timer.num_compute_tokens_wo_spec, self.last_verified_len,
+                self.timer.batch_size)
             predicted_overhead = self._predict_overhead(predicted_target_time)
             predicted_time = (predicted_draft_time + predicted_target_time +
                               predicted_overhead)
@@ -273,7 +273,9 @@ class AutoTuner:
                                                 verified_len)
         if verified_len > 0:
             overhead = self._predict_overhead(target_time)
-            draft_time = self._predict_draft_time(target_time)
+            draft_time = self._predict_draft_time(target_time, num_kv_tokens,
+                                                  num_scheduled_tokens,
+                                                  verified_len, batch_size)
         else:
             overhead = 0
             draft_time = 0
@@ -287,8 +289,18 @@ class AutoTuner:
         non_spec_gen_len = batch_size - match_cnt
         return spec_gen_len + non_spec_gen_len
 
-    def _predict_draft_time(self, target_time: float) -> float:
-        return self.draft_percentage * target_time
+    def _predict_draft_time(self, target_time: float, num_kv_tokens: int,
+                            num_scheduled_tokens: int, num_spec_tokens: int,
+                            batch_size: int) -> float:
+        if self.method == "ngram":
+            return self.model_config.draft_percentage * target_time
+        else:
+            return (
+                self.model_config.draft_c_kv * num_kv_tokens +
+                self.model_config.draft_c_compute * num_scheduled_tokens +
+                self.model_config.draft_c_num_spec_tokens * num_spec_tokens +
+                self.model_config.draft_c_batch_size * batch_size +
+                self.model_config.draft_c_fixed)
 
     def _predict_target_time(self, batch_size: int, match_cnt: int,
                              num_kv_tokens: int, num_scheduled_tokens: int,
@@ -299,15 +311,16 @@ class AutoTuner:
                                                                match_cnt)
 
         num_batched_tokens += num_scheduled_tokens
-        target_time = (self.target_c_kv * num_kv_tokens +
-                       self.target_c_compute * num_batched_tokens +
-                       self.target_c_batch_size * batch_size +
-                       self.target_c_enable_spec_decode * (match_cnt > 0) +
-                       self.target_c_fixed)
+        target_time = (
+            self.model_config.target_c_kv * num_kv_tokens +
+            self.model_config.target_c_compute * num_batched_tokens +
+            self.model_config.target_c_batch_size * batch_size +
+            self.model_config.target_c_enable_spec_decode * (match_cnt > 0) +
+            self.model_config.target_c_fixed)
         return target_time
 
     def _predict_overhead(self, target_time: float) -> float:
-        return self.overhead_percentage * target_time
+        return self.model_config.overhead_percentage * target_time
 
 
 @dataclass
@@ -315,6 +328,7 @@ class ProfilerData:
     batch_size: int
     num_compute_tokens: int
     num_kv_tokens: int
+    num_spec_tokens: int
 
     forward_start_time: float
     forward_end_time: float
@@ -328,6 +342,7 @@ class ProfilerData:
             "batch_size": self.batch_size,
             "num_compute_tokens": self.num_compute_tokens,
             "num_kv_tokens": self.num_kv_tokens,
+            "num_spec_tokens": self.num_spec_tokens,
             "forward_start_time": self.forward_start_time,
             "forward_end_time": self.forward_end_time,
             "propose_start_time": self.propose_start_time,
@@ -345,8 +360,9 @@ def timeit():
 class AutoTunerTimer:
 
     def __init__(self,
+                 num_spec_tokens: int,
                  track_goodput: bool = False,
-                 dump_path: str = "profiler_data.jsonl"):
+                 dump_path: str = "eagle_profiler_data.jsonl"):
         self.dump_path = dump_path
         self.enable_profiling = os.environ.get("ENABLE_PROFILING", "0") == "1"
         if self.enable_profiling:
@@ -354,6 +370,7 @@ class AutoTunerTimer:
         self.track_goodput = track_goodput
         if self.track_goodput:
             print("Tracking goodput is enabled.")
+        self.num_spec_tokens = num_spec_tokens
 
     def start_execution(self, requests: dict[str, CachedRequestState],
                         scheduler_output: SchedulerOutput):
@@ -405,10 +422,10 @@ class AutoTunerTimer:
 
         if self.enable_profiling:
             data = ProfilerData(self.batch_size, self.num_compute_tokens,
-                                self.num_kv_tokens, self.forward_start_time,
-                                self.forward_end_time, self.propose_start_time,
-                                self.propose_end_time, self.start_time,
-                                self.end_time)
+                                self.num_kv_tokens, self.num_spec_tokens,
+                                self.forward_start_time, self.forward_end_time,
+                                self.propose_start_time, self.propose_end_time,
+                                self.start_time, self.end_time)
 
             with open(self.dump_path, "a") as f:
                 f.write(json.dumps(data.dump()))

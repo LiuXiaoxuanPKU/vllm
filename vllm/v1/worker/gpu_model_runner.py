@@ -157,10 +157,14 @@ class GPUModelRunner(LoRAModelRunnerMixin):
 
         # Set up speculative decoding.
         self.use_spec_decode = False
-        self.auto_tuner = AutoTuner(fixed_len=False, track_goodput=False)
+        self.auto_tuner = AutoTuner(method="ngram",
+                                    fixed_len=False,
+                                    track_goodput=True)
         if self.speculative_config:
             self.use_spec_decode = True
             self.auto_tuner.num_spec_tokens = self.speculative_config.num_speculative_tokens
+            self.auto_tuner.method = self.speculative_config.method
+            self.auto_tuner.timer.num_spec_tokens = self.speculative_config.num_speculative_tokens
             self.auto_tuner.fixed_len = not self.speculative_config.dsd
             if not self.auto_tuner.fixed_len:
                 print("DSD is enabled...")
@@ -1106,6 +1110,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 bonus_token_ids,
                 sampling_metadata,
             )
+            print(acceptance_rate)
             self.auto_tuner.update_stats(acceptance_rate, output_token_ids)
             sampler_output.sampled_token_ids = output_token_ids
 

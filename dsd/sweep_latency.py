@@ -23,10 +23,12 @@ def b_str(s):
 
 
 tp_model_list = [
-    [4, "meta-llama/Meta-Llama-3.1-70B-Instruct"],
+    # [4, "meta-llama/Meta-Llama-3.1-70B-Instruct"],
     # [2, "Qwen/QwQ-32B"],
     # [1, "meta-llama/Meta-Llama-3.1-8B-Instruct"],
     # [1, "Qwen/Qwen2.5-3B-Instruct"],
+    # [1, "deepseek-ai/DeepSeek-R1-Distill-Llama-8B"]
+    [1, "meta-llama/Llama-3.1-8B-Instruct"]
 ]
 dataset_datapath_list = [
     # ["hf", "AI-MO/aimo-validation-aime"],
@@ -35,36 +37,11 @@ dataset_datapath_list = [
     # ["hf", "likaixin/InstructCoder"],
 ]
 spec_config_list = [
-    "", """
+   """
     {
-        "model": "ngram",
-        "prompt_lookup_max": 7,
-        "prompt_lookup_min": 3,
-        "num_speculative_tokens": 20,
-        "dsd": true
-    }
-    """, """
-    {
-        "model": "ngram",
-        "prompt_lookup_max": 7,
-        "prompt_lookup_min": 3,
-        "num_speculative_tokens": 1,
-        "dsd": false
-    }
-    """, """
-    {
-        "model": "ngram",
-        "prompt_lookup_max": 7,
-        "prompt_lookup_min": 3,
+        "method": "eagle",
+        "model": "yuhuili/EAGLE-LLaMA3.1-Instruct-8B",
         "num_speculative_tokens": 3,
-        "dsd": false
-    }
-    """, """
-    {
-        "model": "ngram",
-        "prompt_lookup_max": 7,
-        "prompt_lookup_min": 3,
-        "num_speculative_tokens": 5,
         "dsd": false
     }
     """

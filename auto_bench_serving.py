@@ -30,7 +30,7 @@ def check_server_status(base_port):
             response = requests.get(f"http://localhost:{base_port}/health")
             if response.status_code == 200:
                 server_ready = True
-                print(g_str("Server is up and running! ") + 
+                print(b_str("Server is up and running! ") + 
                       f"Took {attempt} secs.")
                 break
         except requests.exceptions.ConnectionError:
@@ -115,14 +115,14 @@ for tp_model, spec_config in \
                  f"--port {base_port} --tensor-parallel-size {tp} "
     if spec_config is not None:
         server_cmd += f" --speculative-config '{spec_config}' "
-    print(g_str("Running server command: ") + server_cmd)
+    print(b_str("Running server command: ") + server_cmd)
     server_stdout, server_stderr = subprocess.PIPE, subprocess.PIPE
     if output_to_stdio:
         server_stdout, server_stderr = sys.stdout, sys.stderr
     server = subprocess.Popen(server_cmd, shell=True, 
                               stdout=server_stdout, stderr=server_stderr,
                               preexec_fn=os.setsid)
-    print(g_str("Server is running with PID: ") + str(server.pid))
+    print(b_str("Server is running with PID: ") + str(server.pid))
     # Wait for the server to start
     server_status = check_server_status(base_port)
     if not server_status:
@@ -150,10 +150,10 @@ for tp_model, spec_config in \
         if output_to_stdio:            
             client_stdout, client_stderr = sys.stdout, sys.stderr
         
-        print(g_str("Running client command: ") + client_cmd)
+        print(b_str("Running client command: ") + client_cmd)
         client = subprocess.Popen(client_cmd, shell=True, 
                                 stdout=client_stdout, stderr=client_stderr)
-        print(g_str("Client is running with PID: ") + str(client.pid))
+        print(b_str("Client is running with PID: ") + str(client.pid))
         # Wait for the client to finish
         try:
             stdout, stderr = client.communicate()
@@ -161,11 +161,11 @@ for tp_model, spec_config in \
             print(r_str("Client timed out. Terminating..."))
             client.kill()
             # stdout, stderr = client.communicate()
-        print(g_str("Client finished."))
+        print(b_str("Client finished."))
         if not output_to_stdio:
             # Capture the client logs
             client_logs = client.stdout.read()
-            print(g_str("Client logs:"), client_logs.decode())
+            print(b_str("Client logs:"), client_logs.decode())
             
         benchmark_success = (client.returncode == 0)
         if not os.path.exists(auto_tuner_stat_path):
@@ -203,19 +203,19 @@ for tp_model, spec_config in \
         }
         # print(data)
         torch.save(data, output_path)
-        print(g_str("Bench_serving data saved to: ") + output_path)
+        print(b_str("Bench_serving data saved to: ") + output_path)
         if os.path.exists(auto_tuner_stat_path):
             os.remove(auto_tuner_stat_path)
         if os.path.exists(benchmark_output_path):
             os.remove(benchmark_output_path)
                 
     # Terminate the server
-    print(g_str("Terminating server..."))
+    print(b_str("Terminating server..."))
     os.killpg(os.getpgid(server.pid), signal.SIGTERM)
     server.wait()
-    print(g_str("Server terminated."))
+    print(b_str("Server terminated."))
     if not output_to_stdio:
         # Capture the server logs
         server_logs = server.stdout.read()
-        print(g_str("Server logs:"), server_logs.decode())
-print(g_str("All tests completed."))
+        print(b_str("Server logs:"), server_logs.decode())
+print(b_str("All tests completed."))

@@ -161,14 +161,20 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         # Set up speculative decoding.
         self.use_spec_decode = False
         self.auto_tuner = AutoTuner(fixed_len=False, 
+                                    request_level_dsd=False,
                                     track_goodput=False)
         if self.speculative_config:
             self.use_spec_decode = True
             self.auto_tuner.num_spec_tokens = \
                 self.speculative_config.num_speculative_tokens
             self.auto_tuner.fixed_len = not self.speculative_config.dsd 
+            self.auto_tuner.request_level_dsd = \
+                self.speculative_config.dsd_req_lvl
             if not self.auto_tuner.fixed_len:
-                print("DSD is enabled...")
+                if not self.auto_tuner.request_level_dsd:
+                    print("\033[91mDSD is enabled...\033[0m")
+                else:
+                    print("\033[91mRequest level DSD is enabled...\033[0m")
             if get_pp_group().is_last_rank:
                 if self.speculative_config.method == "ngram":
                     self.drafter = NgramProposer(self.vllm_config)

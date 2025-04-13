@@ -2047,6 +2047,7 @@ class SpeculativeConfig:
     draft_parallel_config: ParallelConfig = field(default=None,
                                                   init=True)  # type: ignore
     dsd: bool = False
+    dsd_req_lvl: bool = False
 
     def compute_hash(self) -> str:
         """

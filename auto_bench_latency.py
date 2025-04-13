@@ -30,14 +30,23 @@ dataset_datapath_list = [
     # ["hf", "likaixin/InstructCoder"],
 ]
 spec_config_list = [
-    None,
+    # None,
+    # """
+    # {
+    #     "model": "ngram",
+    #     "prompt_lookup_max": 7,
+    #     "prompt_lookup_min": 3,
+    #     "num_speculative_tokens": 3,
+    #     "dsd": false
+    # }
+    # """,
     """
     {
         "model": "ngram",
         "prompt_lookup_max": 7,
         "prompt_lookup_min": 3,
         "num_speculative_tokens": 3,
-        "dsd": false
+        "dsd": true
     }
     """,
     """
@@ -46,7 +55,8 @@ spec_config_list = [
         "prompt_lookup_max": 7,
         "prompt_lookup_min": 3,
         "num_speculative_tokens": 3,
-        "dsd": true
+        "dsd": true,
+        "dsd_req_lvl": true
     }
     """,
     # """
@@ -66,7 +76,7 @@ spec_config_list = [
     # }
     # """
 ]
-batch_size_list = [128]
+batch_size_list = [16]
 output_len_list = [512]
 num_iter_list = [10]
 output_dir = f"auto_tuner_bench_latency_output_{str(int(time.time()))[-8:]}"
@@ -109,14 +119,14 @@ for tp_model, dataset_datapath, spec_config, output_len, batch_size, num_iter in
         f"--output-json {benchmark_output_path} "
     if spec_config is not None:
         benchmark_cmd += f"--speculative-config '{spec_config}' "
-    print(g_str("Running command: ") + benchmark_cmd)
+    print(b_str("Running command: ") + benchmark_cmd)
     bench = subprocess.Popen(benchmark_cmd, shell=True, 
                               stdout=sys.stdout, stderr=sys.stderr,
                               preexec_fn=os.setsid)
-    print(g_str("Latency benchmark is running with PID: ") + str(bench.pid))
+    print(b_str("Latency benchmark is running with PID: ") + str(bench.pid))
     # Wait for the benchmark to finish
     stdout, stderr = bench.communicate()
-    print(g_str("Benchmark finished"))
+    print(b_str("Benchmark finished"))
     benchmark_success = (bench.returncode == 0)
     
     if not os.path.exists(auto_tuner_stat_path):
@@ -155,9 +165,9 @@ for tp_model, dataset_datapath, spec_config, output_len, batch_size, num_iter in
     }
     # print(data)
     torch.save(data, output_path)
-    print(g_str("Bench_latency data saved to: ") + output_path)
+    print(b_str("Bench_latency data saved to: ") + output_path)
     if os.path.exists(auto_tuner_stat_path):
         os.remove(auto_tuner_stat_path)
     if os.path.exists(benchmark_output_path):
             os.remove(benchmark_output_path)
-print(g_str("All benchmarks finished!"))
+print(b_str("All benchmarks finished!"))

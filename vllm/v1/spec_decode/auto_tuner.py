@@ -32,6 +32,7 @@ class AutoTuner:
     def __init__(self,
                  num_spec_tokens: int = 3,
                  fixed_len: bool = False,
+                 request_level_dsd: bool = False,
                  track_goodput: bool = False):
         # Some tracking metrics
         # for the auto-tuning process.
@@ -39,7 +40,7 @@ class AutoTuner:
         self.step_cnt = 0
         self.match_cnt = 0
         self.total_cnt = 0
-        self.past_acceptance_rates = []
+        self.past_avg_step_accept_rates = []
         self.past_match_ratios = []
         
         self.per_req_history = {}
@@ -66,6 +67,8 @@ class AutoTuner:
 
         # Should we use fixed length (turn off DSD)
         self.fixed_len = fixed_len
+        # Should we use request level auto-tuning
+        self.request_level_dsd = request_level_dsd
         # Should we track predicted good and measured goodput
         # used for debugging
         self.track_goodput = track_goodput
@@ -79,50 +82,63 @@ class AutoTuner:
         self.step_cnt = 0
         self.match_cnt = 0
         self.total_cnt = 0
-        self.past_acceptance_rates = []
+        self.past_avg_step_accept_rates = []
         self.past_match_ratios = []
         
         self.per_req_history = {}
         self.cur_draft_token_ids = []
         
-    def update_per_req_history(self, output_probs: torch.tensor, 
-                               req_ids: list[int]):
+    def update_history_and_get_acceptance_rates(self, 
+                                                output_probs: torch.tensor, 
+                                                req_ids: list[int]):
+        # Calculate acceptance rates
+        if output_probs is not None:
+            mask = output_probs != PLACEHOLDER_TOKEN_ID
+            avg_step_acceptance_rate = output_probs[mask].mean()
+            self.past_avg_step_accept_rates.append(avg_step_acceptance_rate)
+        else:
+            avg_step_acceptance_rate = torch.tensor(math.nan)
+        global_acceptance_rate = \
+            self._windowed_acceptance_rate(self.past_avg_step_accept_rates)
+        # Update per request history
         for i, req_id in enumerate(req_ids):
             if req_id not in self.per_req_history:
-                self.per_req_history[req_id] = []
+                self.per_req_history[req_id] = {}
+                self.per_req_history[req_id]["step"] = []
+                self.per_req_history[req_id]["draft_token_ids"] = []
+                self.per_req_history[req_id]["output_probs"] = []
+                self.per_req_history[req_id]["step_acceptance_rates"] = []
+                
             output_prob = None if output_probs is None else output_probs[i]
             draft_token_ids = None if len(self.cur_draft_token_ids) <= i else \
                 self.cur_draft_token_ids[i]
-            self.per_req_history[req_id].append(
-                {"step": self.step_cnt,
-                 "output_probs": output_prob,
-                 "draft_token_ids": draft_token_ids})
-            
-    def update_acceptance_rates(self, output_probs: torch.tensor):
-        if output_probs is not None:
-            mask = output_probs != PLACEHOLDER_TOKEN_ID
-            acceptance_rate = output_probs[mask].mean()
-            self.past_acceptance_rates.append(acceptance_rate)
-            global_acceptance_rate = self.acceptance_rate
-        else:
-            acceptance_rate = torch.tensor(math.nan)
-            if len(self.past_acceptance_rates) == 0:
-                global_acceptance_rate = torch.tensor(math.nan)
-            else:
-                global_acceptance_rate = self.acceptance_rate
-        return acceptance_rate, global_acceptance_rate
+            step_acceptance_rate = 0.0
+            if output_prob is not None:
+                mask = output_prob != PLACEHOLDER_TOKEN_ID
+                masked_output_prob = output_prob[mask]
+                if masked_output_prob.numel() > 0:
+                    step_acceptance_rate = masked_output_prob.mean()
+                    
+            self.per_req_history[req_id]["step"].append(self.step_cnt)
+            self.per_req_history[req_id]["draft_token_ids"].append(
+                draft_token_ids)
+            self.per_req_history[req_id]["output_probs"].append(
+                output_prob)
+            self.per_req_history[req_id]["step_acceptance_rates"].append(
+                step_acceptance_rate)
+        
+        return avg_step_acceptance_rate, global_acceptance_rate
         
     def update_stats(self, output_probs: torch.tensor, req_ids: list[int]):
-        self.update_per_req_history(output_probs, req_ids)
-        acceptance_rate, global_acceptance_rate = \
-            self.update_acceptance_rates(output_probs)
+        avg_step_acceptance_rate, global_acceptance_rate = \
+            self.update_history_and_get_acceptance_rates(output_probs, req_ids)
         if get_tensor_model_parallel_rank() == 0:
             if self.step_cnt % 100 == 0:
                 past_match_ratio = self.past_match_ratios[-1] if \
                     len(self.past_match_ratios) > 0 else math.nan
                 print(
                     f"Step {self.step_cnt}: "
-                    f"Last acceptance rate: {acceptance_rate:.2f}",
+                    f"Last acceptance rate: {avg_step_acceptance_rate:.2f}",
                     f"Last match ratio: {past_match_ratio:.2f}",
                     f"Global acceptance rate: {global_acceptance_rate:.2f}",
                     "Global match ratio:",
@@ -141,6 +157,7 @@ class AutoTuner:
                         "draft_percentage": self.draft_percentage,
                         "overhead_percentage": self.overhead_percentage,
                         "fixed_len": self.fixed_len,
+                        "request_level_dsd": self.request_level_dsd,
                         "track_goodput": self.track_goodput,
                         "num_spec_tokens": self.num_spec_tokens,
                     
@@ -148,7 +165,7 @@ class AutoTuner:
                         "match_cnt": self.match_cnt,
                         "total_cnt": self.total_cnt,
                         "step_timestamps": self.step_timestamps,
-                        "past_acceptance_rates": self.past_acceptance_rates,
+                        "past_avg_step_accept_rates": self.past_avg_step_accept_rates,
                         "past_match_ratios": self.past_match_ratios,
                         "per_req_history": self.per_req_history,                     
                     }
@@ -173,10 +190,12 @@ class AutoTuner:
         for i in range(max_draft_len + 1):
             cur_goodput, draft_time, target_time = self._predict_goodput(
                 batch_size, match_cnt, num_kv_tokens, num_scheduled_tokens, i)
+            window_acceptance_rate = \
+                self._windowed_acceptance_rate(self.past_avg_step_accept_rates)
             rank_print(
                 f"Goodput for k={i}: {cur_goodput:.2f},",
                 f"batch_size: {batch_size},",
-                f"Acceptance rate: {self.acceptance_rate:.2f},",
+                f"Acceptance rate: {window_acceptance_rate:.2f},",
                 f"draft_time: {draft_time:.2f}, target_time: {target_time:.2f}"
             )
             if cur_goodput > max_goodput:
@@ -254,23 +273,44 @@ class AutoTuner:
                                              num_kv_tokens,
                                              num_compute_tokens_wo_spec,
                                              max_draft_len)
-
-        # Update the scheduler output.
-        total_num_scheduled_tokens = scheduler_output.total_num_scheduled_tokens
-        for req_id, num_scheduled_tokens in scheduler_output.num_scheduled_tokens.items(
-        ):
-            request = requests[req_id]
-            num_spec_tokens = len(
-                scheduler_output.scheduled_spec_decode_tokens.get(req_id, []))
-            # We need to truncate the draft length
-            # to the verified length.
-            if num_spec_tokens > verified_len:
-                scheduler_output.scheduled_spec_decode_tokens[req_id] = \
-                    scheduler_output.scheduled_spec_decode_tokens[req_id][:verified_len]
-                num_scheduled_tokens -= (num_spec_tokens - verified_len)
-                total_num_scheduled_tokens -= (num_spec_tokens - verified_len)
-                scheduler_output.num_scheduled_tokens[
-                    req_id] = num_scheduled_tokens
+        if not self.request_level_dsd:
+            # Update the scheduler output.
+            total_num_scheduled_tokens = scheduler_output.total_num_scheduled_tokens
+            for req_id, num_scheduled_tokens in \
+                scheduler_output.num_scheduled_tokens.items():
+                num_spec_tokens = len(
+                    scheduler_output.scheduled_spec_decode_tokens.get(req_id, []))
+                # We need to truncate the draft length
+                # to the verified length.
+                if num_spec_tokens > verified_len:
+                    scheduler_output.scheduled_spec_decode_tokens[req_id] = \
+                        scheduler_output.scheduled_spec_decode_tokens[req_id][:verified_len]
+                    num_scheduled_tokens -= (num_spec_tokens - verified_len)
+                    total_num_scheduled_tokens -= (num_spec_tokens - verified_len)
+                    scheduler_output.num_scheduled_tokens[
+                        req_id] = num_scheduled_tokens
+        else:
+            print(f"Request level DSD is enabled. ")
+            # Update the scheduler output.
+            total_num_scheduled_tokens = scheduler_output.total_num_scheduled_tokens
+            for req_id, num_scheduled_tokens in \
+                scheduler_output.num_scheduled_tokens.items():
+                req_acceptance_rate_history = \
+                    self.per_req_history[req_id]["step_acceptance_rates"]
+                req_acceptance_rate = \
+                    self._windowed_acceptance_rate(req_acceptance_rate_history)
+                num_spec_tokens = len(
+                    scheduler_output.scheduled_spec_decode_tokens.get(req_id, []))
+                # We need to truncate the draft length
+                # to the verified length.
+                if num_spec_tokens > verified_len:
+                    scheduler_output.scheduled_spec_decode_tokens[req_id] = \
+                        scheduler_output.scheduled_spec_decode_tokens[req_id][:verified_len]
+                    num_scheduled_tokens -= (num_spec_tokens - verified_len)
+                    total_num_scheduled_tokens -= (num_spec_tokens - verified_len)
+                    scheduler_output.num_scheduled_tokens[
+                        req_id] = num_scheduled_tokens
+                
         scheduler_output.total_num_scheduled_tokens = total_num_scheduled_tokens
 
     def start_execution(self, requests: dict[str, CachedRequestState],
@@ -321,11 +361,9 @@ class AutoTuner:
                 }
                 f.write(json.dumps(goodput) + "\n")
 
-    @property
-    def acceptance_rate(self):
-        window_acceptance_rates = self.past_acceptance_rates[-self.
-                                                             window_size:]
-        if len(self.past_acceptance_rates) or len(window_acceptance_rates) == 0:
+    def _windowed_acceptance_rate(self, aceptance_rate_list: list[float]):
+        window_acceptance_rates = aceptance_rate_list[-self.window_size:]
+        if len(aceptance_rate_list) == 0 or len(window_acceptance_rates) == 0:
             return self.start_acceptance_rate
         return sum(window_acceptance_rates) / (len(window_acceptance_rates))
 
@@ -348,8 +386,10 @@ class AutoTuner:
 
     def _predict_generated_len(self, batch_size: int, match_cnt: int,
                                verified_len: int):
-        spec_gen_len = float((1 - self.acceptance_rate**(verified_len + 1)) /
-                             (1 - self.acceptance_rate))
+        window_acceptance_rate = \
+            self._windowed_acceptance_rate(self.past_avg_step_accept_rates)
+        spec_gen_len = float((1 - window_acceptance_rate**(verified_len + 1)) /
+                             (1 - window_acceptance_rate))
         non_spec_gen_len = batch_size - match_cnt
         return spec_gen_len + non_spec_gen_len
 

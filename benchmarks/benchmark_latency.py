@@ -115,20 +115,11 @@ def main(args: argparse.Namespace):
     tokenizer = AutoTokenizer.from_pretrained(
         args.tokenizer, trust_remote_code=args.trust_remote_code)
 
-    for batch_size in [1, 2, 4, 8, 16, 32, 64, 128, 256]:
+    for batch_size in [8]:
         print("----------------------------------")
         print(f"Batch size: {batch_size}")
-        requests = get_requests(batch_size, args, tokenizer)
-        prompts: list[Union[TextPrompt, TokensPrompt]] = []
-        for request in requests:
-            prompts.append(
-                TokensPrompt(prompt_token_ids=request.prompt["prompt_token_ids"],
-                        multi_modal_data=request.multi_modal_data)
-                if "prompt_token_ids" in request.prompt else \
-                TextPrompt(prompt=request.prompt,
-                        multi_modal_data=request.multi_modal_data))
 
-        def llm_generate():
+        def llm_generate(prompts):
             if (args.iterate_requests):
                 # Iterate through the requests in the dataset
                 print(y_str("Iterating through the requests in the dataset"))
@@ -183,8 +174,23 @@ def main(args: argparse.Namespace):
                     llm_generate()
                 print(p.key_averages().table(sort_by="self_cuda_time_total"))
             else:
+                # we want to sample different requests
+                # at different iterations
+                if args.seed is None:
+                    args.seed = 0
+                args.seed = args.seed + 1
+                requests = get_requests(batch_size, args, tokenizer)
+                prompts: list[Union[TextPrompt, TokensPrompt]] = []
+                for request in requests:
+                    # print(g_str(request.prompt))
+                    prompts.append(
+                        TokensPrompt(prompt_token_ids=request.prompt["prompt_token_ids"],
+                                multi_modal_data=request.multi_modal_data)
+                        if "prompt_token_ids" in request.prompt else \
+                        TextPrompt(prompt=request.prompt,
+                                multi_modal_data=request.multi_modal_data))
                 start_time = time.perf_counter()
-                llm_generate()
+                llm_generate(prompts)
                 end_time = time.perf_counter()
                 latency = end_time - start_time
                 return latency

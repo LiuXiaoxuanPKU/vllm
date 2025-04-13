@@ -430,6 +430,7 @@ async def benchmark(
         "output_lens": actual_output_lens,
         "ttfts": [output.ttft for output in outputs],
         "itls": [output.itl for output in outputs],
+        "e2es": [output.latency for output in outputs],
         "generated_texts": [output.generated_text for output in outputs],
         "errors": [output.error for output in outputs],
     }
@@ -894,7 +895,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--percentile-metrics",
         type=str,
-        default="ttft,tpot,itl",
+        default="ttft,tpot,itl,e2el",
         help="Comma-seperated list of selected metrics to report percentils. "
         "This argument specifies the metrics to report percentiles. "
         "Allowed metric names are \"ttft\", \"tpot\", \"itl\", \"e2el\". "

@@ -37,7 +37,7 @@ dataset_datapath_list = [
     # ["hf", "likaixin/InstructCoder"],
 ]
 spec_config_list = [
-   """
+    """
     {
         "method": "eagle",
         "model": "yuhuili/EAGLE-LLaMA3.1-Instruct-8B",

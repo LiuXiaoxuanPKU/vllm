@@ -18,9 +18,9 @@ def b_str(s):
     return "\033[94m" + str(s) + "\033[0m"
 
 tp_model_list = [
-    [4, "meta-llama/Meta-Llama-3.1-70B-Instruct"],
+    # [4, "meta-llama/Meta-Llama-3.1-70B-Instruct"],
     # [2, "Qwen/QwQ-32B"], 
-    # [1, "meta-llama/Meta-Llama-3.1-8B-Instruct"], 
+    [1, "meta-llama/Meta-Llama-3.1-8B-Instruct"], 
     # [1, "Qwen/Qwen2.5-3B-Instruct"],
 ]
 dataset_datapath_list = [
@@ -108,7 +108,7 @@ for tp_model, dataset_datapath, spec_config, output_len, batch_size, num_iter in
     dataset, datapath = dataset_datapath
     # Run the benchmark script
     benchmark_cmd = \
-        f"python3 benchmarks/benchmark_latency.py --enforce-eager "\
+        f"python3 benchmarks/benchmark_latency.py "\
         f"--num-iters-warmup 3 --num-iters {num_iter} "\
         f"--output-len {output_len} "\
         f"--tensor-parallel-size {tp} "\

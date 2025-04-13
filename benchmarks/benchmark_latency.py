@@ -23,12 +23,19 @@ from vllm.inputs import TextPrompt, TokensPrompt
 from vllm.sampling_params import BeamSearchParams
 from vllm.utils import FlexibleArgumentParser
 
+
 def r_str(s):
     return "\033[91m" + str(s) + "\033[0m"
+
+
 def g_str(s):
     return "\033[92m" + str(s) + "\033[0m"
+
+
 def y_str(s):
     return "\033[93m" + str(s) + "\033[0m"
+
+
 def b_str(s):
     return "\033[94m" + str(s) + "\033[0m"
 
@@ -43,6 +50,41 @@ def save_to_pytorch_benchmark_format(args: argparse.Namespace,
         pt_file = f"{os.path.splitext(args.output_json)[0]}.pytorch.json"
         write_to_json(pt_file, pt_records)
         
+first_execution_of_collect_acceptance_rates = True
+pre_acceptance_rate_len = 0
+def collect_acceptance_rates():
+    acceptance_export_path = "acceptance_rate_tmp.pt"
+    acceptance_list_export_path = "acceptance_rates_per_req.pt"
+    global first_execution_of_collect_acceptance_rates
+    global pre_acceptance_rate_len
+    if os.path.exists(acceptance_export_path):
+        acceptance_rates = torch.load(acceptance_export_path)
+    else:
+        acceptance_rates = []
+    # print(y_str("Found acceptance rate file of length ") + 
+    #       f"{len(acceptance_rates)}, " +
+    #       y_str("previous acceptance rate file length ") +
+    #       f"{pre_acceptance_rate_len} ")
+    if os.path.exists(acceptance_list_export_path) and \
+         not first_execution_of_collect_acceptance_rates:
+        acceptance_list = torch.load(acceptance_list_export_path)
+    else:
+        acceptance_list = []
+        first_execution_of_collect_acceptance_rates = False
+    new_pre_acceptance_rate_len = len(acceptance_rates)
+    acceptance_rates_torch = acceptance_rates[pre_acceptance_rate_len:]
+    acceptance_rates = [acceptance_rates_torch[i].item() \
+        for i in range(len(acceptance_rates_torch))]
+    pre_acceptance_rate_len = new_pre_acceptance_rate_len
+    acceptance_list.append(acceptance_rates)
+    print(b_str("Saving acceptance rate list of length ") +
+          f"{len(acceptance_list)} " +
+          b_str("to ") +
+          f"{acceptance_list_export_path}, " +
+          b_str("appended new req of length ") +
+          f"{len(acceptance_list[-1])} ")
+    torch.save(acceptance_list, acceptance_list_export_path)
+
 def main(args: argparse.Namespace):
     print(args)
 
@@ -191,16 +233,17 @@ def main(args: argparse.Namespace):
     for percentage, percentile in zip(percentages, percentiles):
         print(f"{percentage}% percentile latency: {percentile} seconds")
 
-    # Output JSON results if specified
-    if args.output_json:
-        results = {
-            "avg_latency": np.mean(latencies),
-            "latencies": latencies.tolist(),
-            "percentiles": dict(zip(percentages, percentiles.tolist())),
-        }
-        with open(args.output_json, "w") as f:
-            json.dump(results, f, indent=4)
-        save_to_pytorch_benchmark_format(args, results)
+        # Output JSON results if specified
+        if args.output_json:
+            results = {
+                "avg_latency": np.mean(latencies),
+                "latencies": latencies.tolist(),
+                "percentiles": dict(zip(percentages, percentiles.tolist())),
+                "batch_size": batch_size,
+            }
+            with open(args.output_json, "a") as f:
+                f.write(json.dumps(results) + "\n")
+            save_to_pytorch_benchmark_format(args, results)
 
 
 if __name__ == "__main__":

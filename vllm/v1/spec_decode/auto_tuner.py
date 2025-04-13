@@ -196,6 +196,7 @@ class AutoTuner:
                 f"Goodput for k={i}: {cur_goodput:.2f},",
                 f"batch_size: {batch_size},",
                 f"Acceptance rate: {window_acceptance_rate:.2f},",
+                f"Global match ratio: {self.match_cnt / (self.total_cnt + 1e-5):.2f},",
                 f"draft_time: {draft_time:.2f}, target_time: {target_time:.2f}"
             )
             if cur_goodput > max_goodput:
@@ -389,7 +390,7 @@ class AutoTuner:
         window_acceptance_rate = \
             self._windowed_acceptance_rate(self.past_avg_step_accept_rates)
         spec_gen_len = float((1 - window_acceptance_rate**(verified_len + 1)) /
-                             (1 - window_acceptance_rate))
+                             (1 - window_acceptance_rate)) * match_cnt
         non_spec_gen_len = batch_size - match_cnt
         return spec_gen_len + non_spec_gen_len
 

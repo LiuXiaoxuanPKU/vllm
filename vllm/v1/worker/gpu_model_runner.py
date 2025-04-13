@@ -1126,7 +1126,6 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 bonus_token_ids,
                 sampling_metadata,
             )
-            print(acceptance_rate)
             self.auto_tuner.update_stats(acceptance_rate, output_token_ids)
             sampler_output.sampled_token_ids = output_token_ids
 

@@ -18,34 +18,34 @@ def b_str(s):
     return "\033[94m" + str(s) + "\033[0m"
 
 tp_model_list = [
-    # [4, "meta-llama/Meta-Llama-3.1-70B-Instruct"],
+    [4, "meta-llama/Meta-Llama-3.1-70B-Instruct"],
     # [2, "Qwen/QwQ-32B"], 
-    [1, "meta-llama/Meta-Llama-3.1-8B-Instruct"], 
+    # [1, "meta-llama/Meta-Llama-3.1-8B-Instruct"], 
     # [1, "Qwen/Qwen2.5-3B-Instruct"],
 ]
 dataset_datapath_list = [
-    ["sonnet", "/data/js_park/vllm_dsd/benchmarks/sonnet.txt"],
-    # ["sharegpt", "/data/js_park/vllm_dsd/ShareGPT_V3_unfiltered_cleaned_split.json"],
+    # ["sonnet", "/data/js_park/vllm_dsd/benchmarks/sonnet.txt"],
+    ["sharegpt", "/data/js_park/vllm_dsd/ShareGPT_V3_unfiltered_cleaned_split.json"],
     # ["hf", "AI-MO/aimo-validation-aime"],
     # ["hf", "likaixin/InstructCoder"],
 ]
 spec_config_list = [
-    # None,
-    # """
-    # {
-    #     "model": "ngram",
-    #     "prompt_lookup_max": 7,
-    #     "prompt_lookup_min": 3,
-    #     "num_speculative_tokens": 3,
-    #     "dsd": false
-    # }
-    # """,
+    None,
     """
     {
         "model": "ngram",
         "prompt_lookup_max": 7,
         "prompt_lookup_min": 3,
         "num_speculative_tokens": 3,
+        "dsd": false
+    }
+    """,
+    """
+    {
+        "model": "ngram",
+        "prompt_lookup_max": 7,
+        "prompt_lookup_min": 3,
+        "num_speculative_tokens": 20,
         "dsd": true
     }
     """,
@@ -54,7 +54,7 @@ spec_config_list = [
         "model": "ngram",
         "prompt_lookup_max": 7,
         "prompt_lookup_min": 3,
-        "num_speculative_tokens": 3,
+        "num_speculative_tokens": 20,
         "dsd": true,
         "dsd_req_lvl": true
     }
@@ -76,7 +76,7 @@ spec_config_list = [
     # }
     # """
 ]
-batch_size_list = [16]
+batch_size_list = [32]
 output_len_list = [512]
 num_iter_list = [10]
 output_dir = f"auto_tuner_bench_latency_output_{str(int(time.time()))[-8:]}"

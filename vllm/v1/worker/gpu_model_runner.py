@@ -1304,6 +1304,12 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             if not is_spec_decode_supported(req_id, self.input_batch):
                 draft_token_ids.append([])
                 continue
+                
+            if self.auto_tuner.request_level_dsd:
+                proposed_len = self.auto_tuner.req_last_verified_len.get(
+                    req_id, None)
+                if proposed_len is not None:
+                    self.auto_tuner.set_proposed_len(self.drafter, proposed_len)
 
             # Add sampled_token_ids to token_ids_cpu.
             start_idx = self.input_batch.num_tokens_no_spec[i]

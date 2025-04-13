@@ -54,6 +54,7 @@ class AutoTuner:
 
         # some cached values
         self.last_verified_len = -1
+        self.req_last_verified_len = {}
 
         # Llama70B, TP4, H100
         self.target_c_kv = 6.24369264e-05
@@ -108,6 +109,7 @@ class AutoTuner:
                 self.per_req_history[req_id]["draft_token_ids"] = []
                 self.per_req_history[req_id]["output_probs"] = []
                 self.per_req_history[req_id]["step_acceptance_rates"] = []
+                self.per_req_history[req_id]["prev_acceptance_rates"] = []
                 
             output_prob = None if output_probs is None else output_probs[i]
             draft_token_ids = None if len(self.cur_draft_token_ids) <= i else \
@@ -118,6 +120,8 @@ class AutoTuner:
                 masked_output_prob = output_prob[mask]
                 if masked_output_prob.numel() > 0:
                     step_acceptance_rate = masked_output_prob.mean()
+                    self.per_req_history[req_id]["prev_acceptance_rates"].append(
+                        step_acceptance_rate)
                     
             self.per_req_history[req_id]["step"].append(self.step_cnt)
             self.per_req_history[req_id]["draft_token_ids"].append(
@@ -210,12 +214,16 @@ class AutoTuner:
         self.last_verified_len = best_verified_len
         return best_verified_len
 
-    def set_proposed_len(self, proposer: NgramProposer | EagleProposer):
+    def set_proposed_len(self, proposer: NgramProposer | EagleProposer,
+                         propose_len: int = None):
         # reset every update interval
         if self.step_cnt % self.update_interval == 0:
-            self._set_proposer(proposer, self.num_spec_tokens)
-        elif self.last_verified_len >= 0:
-            self._set_proposer(proposer, self.last_verified_len)
+            propose_len = self.num_spec_tokens
+        elif propose_len is None and self.last_verified_len >= 0:
+            propose_len = self.last_verified_len 
+        else:
+            return
+        self._set_proposer(proposer, propose_len)
 
     def _set_proposer(self, proposer: NgramProposer | EagleProposer,
                       num_tokens: int):
@@ -250,31 +258,31 @@ class AutoTuner:
         if skip_adjust:
             return
 
-        # Calculate parameters used for goodput prediction.
-        num_kv_tokens = 0
-        num_compute_tokens_wo_spec = 0
-        max_draft_len = 0
-        batch_size = len(scheduler_output.num_scheduled_tokens)
-        for req_id, num_scheduled_tokens in scheduler_output.num_scheduled_tokens.items(
-        ):
-            request = requests[req_id]
-            num_kv_tokens += request.num_tokens
-            num_spec_tokens = len(
-                scheduler_output.scheduled_spec_decode_tokens.get(req_id, []))
-            num_compute_tokens_wo_spec += num_scheduled_tokens - num_spec_tokens
-            max_draft_len = max(max_draft_len, num_spec_tokens)
-
-        match_cnt = len(scheduler_output.scheduled_spec_decode_tokens)
-        self.total_cnt += batch_size
-        self.match_cnt += match_cnt
-        self.past_match_ratios.append(match_cnt * 1.0 / (batch_size))
-
-        # Use goodput prediction to get the verified length.
-        verified_len = self.get_verified_len(batch_size, match_cnt,
-                                             num_kv_tokens,
-                                             num_compute_tokens_wo_spec,
-                                             max_draft_len)
         if not self.request_level_dsd:
+            # Calculate parameters used for goodput prediction.
+            num_kv_tokens = 0
+            num_compute_tokens_wo_spec = 0
+            max_draft_len = 0
+            batch_size = len(scheduler_output.num_scheduled_tokens)
+            for req_id, num_scheduled_tokens in scheduler_output.num_scheduled_tokens.items(
+            ):
+                request = requests[req_id]
+                num_kv_tokens += request.num_tokens
+                num_spec_tokens = len(
+                    scheduler_output.scheduled_spec_decode_tokens.get(req_id, []))
+                num_compute_tokens_wo_spec += num_scheduled_tokens - num_spec_tokens
+                max_draft_len = max(max_draft_len, num_spec_tokens)
+
+            match_cnt = len(scheduler_output.scheduled_spec_decode_tokens)
+            self.total_cnt += batch_size
+            self.match_cnt += match_cnt
+            self.past_match_ratios.append(match_cnt * 1.0 / (batch_size))
+
+            # Use goodput prediction to get the verified length.
+            verified_len = self.get_verified_len(batch_size, match_cnt,
+                                                num_kv_tokens,
+                                                num_compute_tokens_wo_spec,
+                                                max_draft_len)
             # Update the scheduler output.
             total_num_scheduled_tokens = scheduler_output.total_num_scheduled_tokens
             for req_id, num_scheduled_tokens in \
@@ -292,26 +300,81 @@ class AutoTuner:
                         req_id] = num_scheduled_tokens
         else:
             print(f"Request level DSD is enabled. ")
+            # Calculate parameters used for goodput prediction.
+            num_kv_tokens = 0
+            num_compute_tokens_wo_spec = 0
+            max_draft_len = 0
+            batch_size = len(scheduler_output.num_scheduled_tokens)
+            for req_id, num_scheduled_tokens in scheduler_output.num_scheduled_tokens.items(
+            ):
+                request = requests[req_id]
+                num_kv_tokens += request.num_tokens
+                num_spec_tokens = len(
+                    scheduler_output.scheduled_spec_decode_tokens.get(req_id, []))
+                num_compute_tokens_wo_spec += num_scheduled_tokens - num_spec_tokens
+                max_draft_len = max(max_draft_len, num_spec_tokens)    # Calculate parameters used for goodput prediction.
+            num_kv_tokens = 0
+            num_compute_tokens_wo_spec = 0
+            max_draft_len = 0
+            batch_size = len(scheduler_output.num_scheduled_tokens)
+            req_acceptance_rate_list = {}
+            sum_acceptance_rate = 0.0
+            for req_id, num_scheduled_tokens in scheduler_output.num_scheduled_tokens.items(
+            ):
+                request = requests[req_id]
+                num_kv_tokens += request.num_tokens
+                num_spec_tokens = len(
+                    scheduler_output.scheduled_spec_decode_tokens.get(req_id, []))
+                num_compute_tokens_wo_spec += num_scheduled_tokens - num_spec_tokens
+                max_draft_len = max(max_draft_len, num_spec_tokens)
+                req_acceptance_rate_history = \
+                    self.per_req_history[req_id]["prev_acceptance_rates"]
+                req_acceptance_rate = \
+                    self._windowed_acceptance_rate(req_acceptance_rate_history)
+                req_acceptance_rate_list[req_id] = req_acceptance_rate
+                sum_acceptance_rate += req_acceptance_rate
+            
+
+            match_cnt = len(scheduler_output.scheduled_spec_decode_tokens)
+            self.total_cnt += batch_size
+            self.match_cnt += match_cnt
+            self.past_match_ratios.append(match_cnt * 1.0 / (batch_size))
+
+            # Use goodput prediction to get the verified length.
+            verified_len = self.get_verified_len(batch_size, match_cnt,
+                                                num_kv_tokens,
+                                                num_compute_tokens_wo_spec,
+                                                max_draft_len)
+            verified_len_coeff = verified_len * batch_size / sum_acceptance_rate
+            
             # Update the scheduler output.
             total_num_scheduled_tokens = scheduler_output.total_num_scheduled_tokens
             for req_id, num_scheduled_tokens in \
                 scheduler_output.num_scheduled_tokens.items():
-                req_acceptance_rate_history = \
-                    self.per_req_history[req_id]["step_acceptance_rates"]
-                req_acceptance_rate = \
-                    self._windowed_acceptance_rate(req_acceptance_rate_history)
                 num_spec_tokens = len(
                     scheduler_output.scheduled_spec_decode_tokens.get(req_id, []))
                 # We need to truncate the draft length
                 # to the verified length.
-                if num_spec_tokens > verified_len:
+                req_verified_len = int(0.5 +  # 0.5 is used to round up
+                    verified_len_coeff * req_acceptance_rate_list[req_id])
+                self.req_last_verified_len[req_id] = req_verified_len
+                if num_spec_tokens > req_verified_len:
                     scheduler_output.scheduled_spec_decode_tokens[req_id] = \
-                        scheduler_output.scheduled_spec_decode_tokens[req_id][:verified_len]
-                    num_scheduled_tokens -= (num_spec_tokens - verified_len)
-                    total_num_scheduled_tokens -= (num_spec_tokens - verified_len)
+                        scheduler_output.scheduled_spec_decode_tokens[req_id][:req_verified_len]
+                    num_scheduled_tokens -= (num_spec_tokens - req_verified_len)
+                    total_num_scheduled_tokens -= (num_spec_tokens - req_verified_len)
                     scheduler_output.num_scheduled_tokens[
                         req_id] = num_scheduled_tokens
-                
+            # print(f"\033[91mreq_acceptance_rate_list: \033[0m"
+            #       f"{req_acceptance_rate_list} "
+            #       f"\033[91mverified_len_coeff: \033[0m"
+            #       f"{verified_len_coeff} "
+            #       f"\033[91mverified_len: \033[0m"
+            #       f"{verified_len} "
+            #       f"\033[91mBatch Size: \033[0m"
+            #       f"{batch_size} "
+            #       f"\033[91mreq_last_verified_len: \033[0m"
+            #       f"{self.req_last_verified_len}")
         scheduler_output.total_num_scheduled_tokens = total_num_scheduled_tokens
 
     def start_execution(self, requests: dict[str, CachedRequestState],

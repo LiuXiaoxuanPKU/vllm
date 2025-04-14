@@ -162,7 +162,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         self.use_spec_decode = False
         self.auto_tuner = AutoTuner(method="ngram",
                                     fixed_len=False,
-                                    track_goodput=True)
+                                    track_goodput=False)
         if self.speculative_config:
             self.use_spec_decode = True
             self.auto_tuner.num_spec_tokens = self.speculative_config.num_speculative_tokens
@@ -281,6 +281,8 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                                         device="cpu",
                                         pin_memory=self.pin_memory)
         self.seq_lens_np = self.seq_lens_cpu.numpy()
+
+        self.disable_spec_req_ids = set()
 
     def _update_states(self, scheduler_output: "SchedulerOutput") -> None:
         """Update the cached states and the persistent batch with the scheduler
@@ -1016,8 +1018,10 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         else:
             mm_embeds = []
 
-        spec_token_ids = self.auto_tuner.set_verify_len(
-            self.requests, scheduler_output)
+        self.auto_tuner.set_verify_len(self.requests, scheduler_output)
+        if self.auto_tuner.last_verified_len == 0:
+            self.disable_spec_req_ids = self.disable_spec_req_ids.union(
+                set(self.input_batch.req_ids))
 
         # Prepare the decoder inputs.
         attn_metadata, logits_indices, spec_decode_metadata = (
@@ -1177,20 +1181,29 @@ class GPUModelRunner(LoRAModelRunnerMixin):
 
         self.auto_tuner.timer.start_propose()
         if self.use_spec_decode:
-            self.auto_tuner.set_proposed_len(self.drafter)
+            old_proposed_len = self.auto_tuner.set_proposed_len(self.drafter)
 
-        if not self.use_spec_decode:
+        use_spec_decode = self.use_spec_decode
+        if self.speculative_config and self.speculative_config.method == "ngram":
+            use_spec_decode = self.drafter.k > 0
+        if self.speculative_config and self.speculative_config.method == "eagle":
+            self.disable_spec_req_ids -= scheduler_output.finished_req_ids
+            all_req_ids = set(self.input_batch.req_ids)
+            if self.drafter.num_speculative_tokens == 0:
+                use_spec_decode = False
+            if all_req_ids.issubset(self.disable_spec_req_ids):
+                use_spec_decode = False
+
+        if not use_spec_decode:
             # Speculative decoding is not enabled.
             spec_token_ids = None
         elif self.speculative_config.method == "ngram":
             assert isinstance(self.drafter, NgramProposer)
-            if self.drafter.k == 0:
-                spec_token_ids = None
-            else:
-                spec_token_ids = self.generate_draft_token_ids(
-                    valid_sampled_token_ids, sampling_metadata)
+            spec_token_ids = self.generate_draft_token_ids(
+                valid_sampled_token_ids, sampling_metadata)
         elif self.speculative_config.method == "eagle":
             assert isinstance(self.drafter, EagleProposer)
+
             # TODO(woosuk): Refactor the loop.
             next_token_ids: list[int] = []
             for i, token_ids in enumerate(valid_sampled_token_ids):
@@ -1251,14 +1264,49 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 block_table=attn_metadata.block_table,
                 sampling_metadata=sampling_metadata,
             )
+
+            # # Assuming draft_token_ids and draft_probs are given tensors
+            # threshold = 0.2  # Example threshold
+            # draft_probs = draft_probs.softmax(dim=-1, dtype=torch.float32)
+
+            # # Step 1: Gather the probabilities of the drafted tokens
+            # probs = draft_probs.gather(
+            #     2,
+            #     draft_token_ids.unsqueeze(-1)  # Add a vocab dimension for gathering
+            # ).squeeze(-1)  # Remove the extra dimension after gathering
+
+            # # Step 2: Create a mask where probabilities are below the threshold
+            # mask = probs < threshold
+
+            # # Step 3: Compute cumulative mask to invalidate subsequent tokens after the first low-probability token
+            # cumulative_mask = mask.cumsum(dim=1) > 0
+
+            # # Step 4: Set invalidated tokens to -1 in-place
+            # draft_token_ids[cumulative_mask] = -1
+
+            # # Step 5: Convert the tensor to a list of lists
+            # # and remove -1 values (invalidated tokens)
+            # spec_token_ids = draft_token_ids.tolist()
+            # for i in range(len(spec_token_ids)):
+            #     spec_token_ids[i] = [
+            #         token_id for token_id in spec_token_ids[i] if token_id != -1
+            #     ]
             spec_token_ids = draft_token_ids.tolist()
+            # Set disable-sd requests to empty.
+            for i, req_id in enumerate(self.input_batch.req_ids):
+                if req_id in self.disable_spec_req_ids:
+                    spec_token_ids[i] = []
             # TODO(woosuk): Cache draft_probs and use it for rejection sampling
             # in the next step.
             del draft_probs
+
+        if self.use_spec_decode:
+            self.auto_tuner.resume_proposer(self.drafter, old_proposed_len)
+
         self.auto_tuner.timer.end_propose()
 
         self.auto_tuner.end_execution(
-            valid_sampled_token_ids,
+            valid_sampled_token_ids,  # list[list[int]]
             spec_token_ids,
         )
         return ModelRunnerOutput(

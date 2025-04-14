@@ -12,7 +12,7 @@ from vllm.v1.spec_decode.config import dsd_model_config
 from vllm.v1.spec_decode.eagle import EagleProposer
 from vllm.v1.spec_decode.ngram_proposer import NgramProposer
 from vllm.v1.worker.gpu_input_batch import CachedRequestState
-
+import copy
 
 def rank_print(*args, sep: str = " ", end: str = "\n"):
     if get_tensor_model_parallel_rank() == 0:
@@ -38,8 +38,8 @@ class AutoTuner:
 
         # config
         self.update_interval = 200
-        self.window_size = 10000
-        self.start_acceptance_rate = 0.8
+        self.window_size = 100
+        self.start_acceptance_rate = 0.5
         model_name = "llama-8b-h100"
         self.model_config = dsd_model_config[model_name]
         self.method = method
@@ -64,7 +64,7 @@ class AutoTuner:
                          max_draft_len: int) -> int:
         best_verified_len = 0
         max_goodput = -1.0
-        start_verified_len = 0 if self.method == "ngram" else 1
+        start_verified_len = 0
         for i in range(start_verified_len, max_draft_len + 1):
             cur_goodput, draft_time, target_time, gen_len = self._predict_goodput(
                 batch_size, match_cnt, num_kv_tokens, num_scheduled_tokens, i)
@@ -87,21 +87,33 @@ class AutoTuner:
         self.last_verified_len = best_verified_len
         return best_verified_len
 
-    def set_proposed_len(self, proposer: NgramProposer | EagleProposer):
+    def set_proposed_len(self, proposer: NgramProposer | EagleProposer) -> int:
+        if self.fixed_len:
+            return None
+    
         # reset every update interval
         if self.step_cnt % self.update_interval == 0:
-            self._set_proposer(proposer, self.num_spec_tokens)
+            return self._set_proposer(proposer, self.num_spec_tokens)
         elif self.last_verified_len >= 0:
-            self._set_proposer(proposer, self.last_verified_len)
+            return self._set_proposer(proposer, self.last_verified_len)
 
     def _set_proposer(self, proposer: NgramProposer | EagleProposer,
                       num_tokens: int):
+        if self.fixed_len:
+            return None
+
         if isinstance(proposer, NgramProposer):
+            old_value = proposer.k
             proposer.k = num_tokens
         elif isinstance(proposer, EagleProposer):
+            old_value = proposer.num_speculative_tokens
             proposer.num_speculative_tokens = num_tokens
         else:
             raise ValueError(f"Unknown proposer type: {type(proposer)}")
+        return old_value
+        
+    def resume_proposer(self, proposer: NgramProposer | EagleProposer, old_value: int):
+        self._set_proposer(proposer, old_value)
 
     def set_verify_len(self, requests: dict[str, CachedRequestState],
                        scheduler_output: SchedulerOutput):
@@ -154,6 +166,8 @@ class AutoTuner:
 
         # Update the scheduler output.
         total_num_scheduled_tokens = scheduler_output.total_num_scheduled_tokens
+        old_schedule_spec_decode_tokens = copy.copy(scheduler_output.scheduled_spec_decode_tokens)
+        scheduler_output.old_schedule_spec_decode_tokens = old_schedule_spec_decode_tokens
         for req_id, num_scheduled_tokens in scheduler_output.num_scheduled_tokens.items(
         ):
             request = requests[req_id]
@@ -162,12 +176,15 @@ class AutoTuner:
             # We need to truncate the draft length
             # to the verified length.
             if num_spec_tokens > verified_len:
-                scheduler_output.scheduled_spec_decode_tokens[req_id] = \
-                    scheduler_output.scheduled_spec_decode_tokens[req_id][:verified_len]
+                assert num_scheduled_tokens >= (num_spec_tokens - verified_len), f"{req_id}: num_scheduled_tokens: {num_scheduled_tokens}, num_spec_tokens: {num_spec_tokens}, verified_len: {verified_len}, {scheduler_output.scheduled_spec_decode_tokens[req_id]}"    
                 num_scheduled_tokens -= (num_spec_tokens - verified_len)
                 total_num_scheduled_tokens -= (num_spec_tokens - verified_len)
                 scheduler_output.num_scheduled_tokens[
                     req_id] = num_scheduled_tokens
+                scheduler_output.scheduled_spec_decode_tokens[req_id] = \
+                        scheduler_output.scheduled_spec_decode_tokens[req_id][:verified_len]
+        print("total_num_scheduled_tokens",
+              total_num_scheduled_tokens,)
         scheduler_output.total_num_scheduled_tokens = total_num_scheduled_tokens
 
     def update_stats(self, acceptance_rate: torch.tensor,
@@ -248,6 +265,7 @@ class AutoTuner:
                     "num_compute_tokens": self.timer.num_compute_tokens,
                     "last_verified_len": self.last_verified_len,
                     "match_cnt": match_cnt,
+                    "acceptance_rate": self.past_acceptance_rates[-1].item() if self.past_acceptance_rates else -1,
                 }
                 f.write(json.dumps(goodput) + "\n")
 
@@ -284,6 +302,18 @@ class AutoTuner:
 
     def _predict_generated_len(self, batch_size: int, match_cnt: int,
                                verified_len: int):
+        # if self.method == "eagle":
+        #     if verified_len > 5:
+        #         verified_len = 5
+        #     acc_map = {
+        #         1: 1.71,
+        #         2: 2.09,
+        #         3: 2.30,
+        #         4: 2.38,
+        #         5: 2.43
+        #     }    
+        #     return acc_map[verified_len]
+
         spec_gen_len = float((1 - self.acceptance_rate**(verified_len + 1)) /
                              (1 - self.acceptance_rate)) * match_cnt
         non_spec_gen_len = batch_size - match_cnt
@@ -311,6 +341,10 @@ class AutoTuner:
                                                                match_cnt)
 
         num_batched_tokens += num_scheduled_tokens
+        print("num_kv_tokens", num_kv_tokens,
+              "num_batched_tokens", num_batched_tokens,
+              "batch_size", batch_size, "match_cnt", match_cnt)
+        
         target_time = (
             self.model_config.target_c_kv * num_kv_tokens +
             self.model_config.target_c_compute * num_batched_tokens +

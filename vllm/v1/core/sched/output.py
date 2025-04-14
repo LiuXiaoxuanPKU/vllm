@@ -121,3 +121,5 @@ class SchedulerOutput:
     structured_output_request_ids: dict[str, int]
     # the bitmask for the whole batch
     grammar_bitmask: Optional[npt.NDArray[np.int32]]
+
+    old_schedule_spec_decode_tokens: Optional[dict[str, list[int]]] = None

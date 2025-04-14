@@ -97,6 +97,8 @@ class LlamaModel(nn.Module):
         params_dict = dict(self.named_parameters())
         loaded_params: Set[str] = set()
         for name, loaded_weight in weights:
+            if name == "fc.bias":
+                continue
             for param_name, weight_name, shard_id in stacked_params_mapping:
                 if weight_name not in name:
                     continue

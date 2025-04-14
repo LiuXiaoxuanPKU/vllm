@@ -165,7 +165,15 @@ class Scheduler(SchedulerInterface):
                 num_new_tokens = (
                     self.scheduler_config.long_prefill_token_threshold)
             num_new_tokens = min(num_new_tokens, token_budget)
-            assert num_new_tokens > 0
+            assert num_new_tokens > 0, (
+                "num_new_tokens should be greater than 0: "
+                f"num_new_tokens: {num_new_tokens}"
+                f" token_budget: {token_budget}"
+                f" num_computed_tokens: {request.num_computed_tokens}"
+                f" num_tokens_with_spec: {request.num_tokens_with_spec}"
+                f" request: {request.request_id}"
+                
+            )
 
             # Schedule encoder inputs.
             if request.has_encoder_inputs:
@@ -597,6 +605,17 @@ class Scheduler(SchedulerInterface):
                 #                        len(generated_token_ids))
                 # request.num_computed_tokens -= num_tokens_rejected
                 request.num_computed_tokens = request.num_tokens
+                # print(f"num_computed_tokens: {request.num_computed_tokens}, "
+                #         f"num_tokens_scheduled: {num_tokens_scheduled}, "
+                #         f"len(scheduled_spec_token_ids): "
+                #         f"{len(scheduled_spec_token_ids)}, "
+                #         f"len(generated_token_ids): "
+                #         f"{len(generated_token_ids)}, "
+                #         f"num_tokens_rejected: "
+                #         f"{len(scheduled_spec_token_ids) + 1 - len(generated_token_ids)}, "
+                #         f" request: {request.request_id}"
+                #         )
+                
                 spec_decoding_stats = self.make_spec_decoding_stats(
                     spec_decoding_stats,
                     num_draft_tokens=len(scheduled_spec_token_ids),

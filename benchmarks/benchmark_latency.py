@@ -78,6 +78,9 @@ def main(args: argparse.Namespace):
 
     tokenizer = AutoTokenizer.from_pretrained(
         args.tokenizer, trust_remote_code=args.trust_remote_code)
+    if args.seed is None:
+        args.seed = 0
+    args.seed = args.seed + 1
     requests = get_requests(args.batch_size, args, tokenizer)
     prompts: list[Union[TextPrompt, TokensPrompt]] = []
     for request in requests:

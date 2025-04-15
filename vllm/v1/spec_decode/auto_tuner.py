@@ -8,6 +8,7 @@ import torch
 
 from vllm.distributed import get_tensor_model_parallel_rank
 from vllm.v1.core.sched.output import SchedulerOutput
+from vllm.v1.spec_decode.config import dsd_model_config
 from vllm.v1.spec_decode.eagle import EagleProposer
 from vllm.v1.spec_decode.ngram_proposer import NgramProposer
 from vllm.v1.worker.gpu_input_batch import CachedRequestState
@@ -17,6 +18,7 @@ import torch
 import os
 import math
 import time
+import copy
 from copy import deepcopy
 
 import triton.language as tl
@@ -39,7 +41,8 @@ def rank_print(*args, sep: str = " ", end: str = "\n"):
 class AutoTuner:
 
     def __init__(self,
-                 num_spec_tokens: int = 3,
+                 method: str,
+                 num_spec_tokens: int = -1,
                  fixed_len: bool = False,
                  request_level_dsd: bool = False,
                  track_goodput: bool = False):
@@ -57,11 +60,14 @@ class AutoTuner:
 
         # config
         self.update_interval = 200
-        self.window_size = 10000
-        self.start_acceptance_rate = 0.8
+        self.window_size = 100
+        self.start_acceptance_rate = 0.5
+        model_name = "llama-8b-h100"
+        self.model_config = dsd_model_config[model_name]
+        self.method = method
 
         # some cached values
-        self.last_verified_len = -1
+        self.last_verified_len = 0
         self.req_last_verified_len = {}
 
         # Llama70B, TP4, H100
@@ -93,7 +99,8 @@ class AutoTuner:
         self.num_spec_tokens = num_spec_tokens
 
         # timer
-        self.timer = AutoTunerTimer(track_goodput=self.track_goodput)
+        self.timer = AutoTunerTimer(num_spec_tokens=num_spec_tokens,
+                                    track_goodput=self.track_goodput)
         
     def reset_stats(self):
         self.step_cnt = 0
@@ -156,7 +163,7 @@ class AutoTuner:
                 step_acceptance_rate)
             
         # Calculate acceptance rates
-        if output_probs is not None:
+        if total_draft_len > 0:
             # mask = output_probs != PLACEHOLDER_TOKEN_ID
             # avg_step_acceptance_rate = output_probs[mask].mean()
             avg_step_acceptance_rate = total_gen_len / total_draft_len
@@ -230,14 +237,16 @@ class AutoTuner:
                          max_draft_len: int) -> int:
         best_verified_len = 0
         max_goodput = -1.0
-        for i in range(max_draft_len + 1):
-            cur_goodput, draft_time, target_time = self._predict_goodput(
+        start_verified_len = 0
+        for i in range(start_verified_len, max_draft_len + 1):
+            cur_goodput, draft_time, target_time, gen_len = self._predict_goodput(
                 batch_size, match_cnt, num_kv_tokens, num_scheduled_tokens, i)
             window_acceptance_rate = \
                 self._windowed_acceptance_rate(self.past_avg_step_accept_rates)
             rank_print(
                 f"Goodput for k={i}: {cur_goodput:.2f},",
-                f"batch_size: {batch_size},",
+                f"batch_size: {batch_size},", f"Match count: {match_cnt},",
+                f"Generated len: {gen_len:.2f},",
                 f"Acceptance rate: {window_acceptance_rate:.2f},",
                 f"Global match ratio: {self.match_cnt / (self.total_cnt + 1e-5):.2f},",
                 f"draft_time: {draft_time:.2f}, target_time: {target_time:.2f}"
@@ -253,25 +262,40 @@ class AutoTuner:
         self.last_verified_len = best_verified_len
         return best_verified_len
 
-    def set_proposed_len(self, proposer: NgramProposer | EagleProposer,
-                         propose_len: int = None):
+    def set_proposed_len(self, proposer: NgramProposer | EagleProposer) -> int:
+        if self.fixed_len:
+            return None
+    
         # reset every update interval
         if (self.step_cnt + 1) % self.update_interval == 0:
-            propose_len = self.num_spec_tokens
-        elif propose_len is None and self.last_verified_len >= 0:
-            propose_len = self.last_verified_len 
+            # print (f"Step {self.step_cnt}: Resetting proposer.")
+            return self._set_proposer(proposer, self.num_spec_tokens)
+        elif self.last_verified_len >= 0:
+            val = self._set_proposer(proposer, self.last_verified_len)
+            return val
         else:
-            return
-        self._set_proposer(proposer, propose_len)
+            raise ValueError(
+                f"Invalid last_verified_len: {self.last_verified_len}. "
+                f"Please check the code.")
+        
 
     def _set_proposer(self, proposer: NgramProposer | EagleProposer,
                       num_tokens: int):
+        if self.fixed_len:
+            return None
         if isinstance(proposer, NgramProposer):
+            old_value = proposer.k
             proposer.k = num_tokens
         elif isinstance(proposer, EagleProposer):
+            old_value = proposer.num_speculative_tokens
             proposer.num_speculative_tokens = num_tokens
         else:
             raise ValueError(f"Unknown proposer type: {type(proposer)}")
+
+        return old_value
+        
+    def resume_proposer(self, proposer: NgramProposer | EagleProposer, old_value: int):
+        self._set_proposer(proposer, old_value)
 
     def set_verify_len(self, requests: dict[str, CachedRequestState],
                        scheduler_output: SchedulerOutput):
@@ -296,7 +320,7 @@ class AutoTuner:
 
         if skip_adjust:
             return
-
+        # print (f"Step {self.step_cnt}: Adjusting verify length.")
         if not self.request_level_dsd:
             # Calculate parameters used for goodput prediction.
             num_kv_tokens = 0
@@ -322,21 +346,27 @@ class AutoTuner:
                                                 num_kv_tokens,
                                                 num_compute_tokens_wo_spec,
                                                 max_draft_len)
+
             # Update the scheduler output.
             total_num_scheduled_tokens = scheduler_output.total_num_scheduled_tokens
-            for req_id, num_scheduled_tokens in \
-                scheduler_output.num_scheduled_tokens.items():
+            old_schedule_spec_decode_tokens = copy.copy(scheduler_output.scheduled_spec_decode_tokens)
+            scheduler_output.old_schedule_spec_decode_tokens = old_schedule_spec_decode_tokens
+            for req_id, num_scheduled_tokens in scheduler_output.num_scheduled_tokens.items(
+            ):
+                request = requests[req_id]
                 num_spec_tokens = len(
                     scheduler_output.scheduled_spec_decode_tokens.get(req_id, []))
                 # We need to truncate the draft length
                 # to the verified length.
                 if num_spec_tokens > verified_len:
-                    scheduler_output.scheduled_spec_decode_tokens[req_id] = \
-                        scheduler_output.scheduled_spec_decode_tokens[req_id][:verified_len]
+                    assert num_scheduled_tokens >= (num_spec_tokens - verified_len), f"{req_id}: num_scheduled_tokens: {num_scheduled_tokens}, num_spec_tokens: {num_spec_tokens}, verified_len: {verified_len}, {scheduler_output.scheduled_spec_decode_tokens[req_id]}"    
                     num_scheduled_tokens -= (num_spec_tokens - verified_len)
                     total_num_scheduled_tokens -= (num_spec_tokens - verified_len)
                     scheduler_output.num_scheduled_tokens[
                         req_id] = num_scheduled_tokens
+                    scheduler_output.scheduled_spec_decode_tokens[req_id] = \
+                            scheduler_output.scheduled_spec_decode_tokens[req_id][:verified_len]
+        
         else:
             print(f"Request level DSD is enabled. ")
             # Calculate parameters used for goodput prediction.
@@ -371,46 +401,79 @@ class AutoTuner:
                                                 num_kv_tokens,
                                                 num_compute_tokens_wo_spec,
                                                 max_draft_len)
-            verified_len_coeff = (verified_len - 1) * batch_size / sum_acceptance_rate
+            if sum_acceptance_rate == 0:
+                verified_len_coeff = 0
+            else:
+                verified_len_coeff = (verified_len) * batch_size / sum_acceptance_rate
             if verified_len_coeff < 0:
                 verified_len_coeff = 0
             
             # Update the scheduler output.
             total_num_scheduled_tokens = scheduler_output.total_num_scheduled_tokens
-            for req_id, num_scheduled_tokens in \
-                scheduler_output.num_scheduled_tokens.items():
+            old_schedule_spec_decode_tokens = copy.copy(scheduler_output.scheduled_spec_decode_tokens)
+            scheduler_output.old_schedule_spec_decode_tokens = old_schedule_spec_decode_tokens
+            for req_id, num_scheduled_tokens in scheduler_output.num_scheduled_tokens.items(
+            ):
+                request = requests[req_id]
                 num_spec_tokens = len(
                     scheduler_output.scheduled_spec_decode_tokens.get(req_id, []))
                 # We need to truncate the draft length
                 # to the verified length.
                 req_verified_len = int(0.5 +  # 0.5 is used to round up
-                    verified_len_coeff * req_acceptance_rate_list[req_id]) + 1
+                    verified_len_coeff * req_acceptance_rate_list[req_id])
                 self.req_last_verified_len[req_id] = req_verified_len
                 if num_spec_tokens > req_verified_len:
-                    scheduler_output.scheduled_spec_decode_tokens[req_id] = \
-                        scheduler_output.scheduled_spec_decode_tokens[req_id][:req_verified_len]
+                    assert num_scheduled_tokens >= (num_spec_tokens - req_verified_len), f"{req_id}: num_scheduled_tokens: {num_scheduled_tokens}, num_spec_tokens: {num_spec_tokens}, req_verified_len: {req_verified_len}, {scheduler_output.scheduled_spec_decode_tokens[req_id]}"    
                     num_scheduled_tokens -= (num_spec_tokens - req_verified_len)
                     total_num_scheduled_tokens -= (num_spec_tokens - req_verified_len)
                     scheduler_output.num_scheduled_tokens[
                         req_id] = num_scheduled_tokens
-                    # print(b_str("Request ID: ") + f"{req_id} " +
-                    #       b_str("Num scheduled tokens: ") +
-                    #       f"{num_scheduled_tokens} " +
-                    #       b_str("Num spec tokens: ") +
-                    #         f"{num_spec_tokens} " +
-                    #         b_str("Verified len: ") +
-                    #         f"{req_verified_len} ")
-            # print(r_str("req_acceptance_rate_list: ") + 
-            #       f"{req_acceptance_rate_list} " +
-            #       r_str("verified_len_coeff: ") + 
-            #       f"{verified_len_coeff} " +
-            #       r_str("verified_len: ") + 
-            #       f"{verified_len} " +
-            #       r_str("Batch Size: ") + 
-            #       f"{batch_size} " +
-            #       r_str("req_last_verified_len: ") + 
-            #       f"{self.req_last_verified_len}")
+                    scheduler_output.scheduled_spec_decode_tokens[req_id] = \
+                            scheduler_output.scheduled_spec_decode_tokens[req_id][:req_verified_len]
+        
+        print("total_num_scheduled_tokens",
+            total_num_scheduled_tokens,)
         scheduler_output.total_num_scheduled_tokens = total_num_scheduled_tokens
+                
+        # print(r_str("req_acceptance_rate_list: ") + 
+        #         f"{req_acceptance_rate_list} " +
+        #         r_str("verified_len_coeff: ") + 
+        #         f"{verified_len_coeff} " +
+        #         r_str("verified_len: ") + 
+        #         f"{verified_len} " +
+        #         r_str("Batch Size: ") + 
+        #         f"{batch_size} " +
+        #         r_str("req_last_verified_len: ") + 
+        #         f"{self.req_last_verified_len}")
+        # Use goodput prediction to get the verified length.
+        
+
+    # def update_stats(self, acceptance_rate: torch.tensor):
+    #     self.step_cnt += 1
+    #     if torch.isnan(acceptance_rate).any():
+    #         rank_print("Acceptance rate is NaN. Skipping update.",
+    #                    f"Step {self.step_cnt}",
+    #                    f"Acceptance rate: {acceptance_rate}")
+    #         return
+    #     self.past_acceptance_rates.append(acceptance_rate)
+    #     # if get_tensor_model_parallel_rank() == 0:
+    #     #     if self.step_cnt % 20 == 0:
+    #     #         rank_print(
+    #     #             f"Step {self.step_cnt}: "
+    #     #             f"Last acceptance rate: {acceptance_rate:.2f}",
+    #     #             f"Last match ratio: {self.past_match_ratios[-1]:.2f}",
+    #     #             f"Global acceptance rate: {self.acceptance_rate:.2f}",
+    #     #             "Global match ratio:",
+    #     #             f"{self.match_cnt / (self.total_cnt + 1e-5):.2f}",
+    #     #         )
+    #     #     # print (self.past_acceptance_rates)
+    #     #     acceptance_export_path = "acceptance_rate_tmp.pt"
+    #     #     # if self.step_cnt % 1 == 0:
+    #     #     #     print(f"\033[91mSaving acceptance rate
+    #     #     #           to\033[0m {acceptance_export_path}, "
+    #     #     #           f"step {self.step_cnt}, list length
+    #     #     #           {len(self.past_acceptance_rates)}")
+    #     #     torch.save(self.past_acceptance_rates, acceptance_export_path)
 
     def start_execution(self, requests: dict[str, CachedRequestState],
                         scheduler_output: SchedulerOutput):
@@ -432,8 +495,11 @@ class AutoTuner:
         #         window_acceptance_rate = \
         #             self._windowed_acceptance_rate(req_acceptance_rate_history)
         #         generated_token_id_list = generated_token_ids[i]
-        #         calc_acceptance_rate = (len(generated_token_id_list)-1) / \
-        #             len(draft_token_id_list)
+        #         if len(draft_token_id_list) == 0:
+        #             calc_acceptance_rate = 0.0
+        #         else:
+        #             calc_acceptance_rate = (len(generated_token_id_list)-1) / \
+        #                 len(draft_token_id_list)
         #         output_probs = self.per_req_history[req_id]["output_probs"][-1]
         #         print(b_str("Step: ") + f"{self.step_cnt} " + 
         #               y_str(", Request ID: ") + f"{req_id} " +
@@ -446,7 +512,7 @@ class AutoTuner:
         #               f"{req_acceptance_rate_history} ")
         #         print()
                       
-        if self.track_goodput:
+        if self.track_goodput and get_tensor_model_parallel_rank() == 0:
             draft_token_ids = draft_token_ids or []
             # Get the measured goodput.
             measured_gen_tokens = sum(
@@ -461,7 +527,9 @@ class AutoTuner:
                 self.timer.batch_size, match_cnt, self.timer.num_kv_tokens,
                 self.timer.num_compute_tokens_wo_spec, self.last_verified_len)
             predicted_draft_time = self._predict_draft_time(
-                predicted_target_time)
+                predicted_target_time, self.timer.num_kv_tokens,
+                self.timer.num_compute_tokens_wo_spec, self.last_verified_len,
+                self.timer.batch_size)
             predicted_overhead = self._predict_overhead(predicted_target_time)
             predicted_time = (predicted_draft_time + predicted_target_time +
                               predicted_overhead)
@@ -484,6 +552,7 @@ class AutoTuner:
                     "num_compute_tokens": self.timer.num_compute_tokens,
                     "last_verified_len": self.last_verified_len,
                     "match_cnt": match_cnt,
+                    "acceptance_rate": self.past_acceptance_rates[-1].item() if self.past_acceptance_rates else -1,
                 }
                 f.write(json.dumps(goodput) + "\n")
 
@@ -505,22 +574,50 @@ class AutoTuner:
                                                 num_kv_tokens,
                                                 num_scheduled_tokens,
                                                 verified_len)
-        overhead = self._predict_overhead(target_time)
-        draft_time = self._predict_draft_time(target_time)
+        if verified_len > 0:
+            overhead = self._predict_overhead(target_time)
+            draft_time = self._predict_draft_time(target_time, num_kv_tokens,
+                                                  num_scheduled_tokens,
+                                                  verified_len, batch_size)
+        else:
+            overhead = 0
+            draft_time = 0
         batch_time = draft_time + target_time + overhead
-        return generated_len * 1000 / batch_time, draft_time, target_time
+        return generated_len * 1000 / batch_time, draft_time, target_time, generated_len
 
     def _predict_generated_len(self, batch_size: int, match_cnt: int,
                                verified_len: int):
         window_acceptance_rate = \
             self._windowed_acceptance_rate(self.past_avg_step_accept_rates)
+        # if self.method == "eagle":
+        #     if verified_len > 5:
+        #         verified_len = 5
+        #     acc_map = {
+        #         1: 1.71,
+        #         2: 2.09,
+        #         3: 2.30,
+        #         4: 2.38,
+        #         5: 2.43
+        #     }    
+        #     return acc_map[verified_len]
+
         spec_gen_len = float((1 - window_acceptance_rate**(verified_len + 1)) /
                              (1 - window_acceptance_rate)) * match_cnt
         non_spec_gen_len = batch_size - match_cnt
         return spec_gen_len + non_spec_gen_len
 
-    def _predict_draft_time(self, target_time: float) -> float:
-        return self.draft_percentage * target_time
+    def _predict_draft_time(self, target_time: float, num_kv_tokens: int,
+                            num_scheduled_tokens: int, num_spec_tokens: int,
+                            batch_size: int) -> float:
+        if self.method == "ngram":
+            return self.model_config.draft_percentage * target_time
+        else:
+            return (
+                self.model_config.draft_c_kv * num_kv_tokens +
+                self.model_config.draft_c_compute * num_scheduled_tokens +
+                self.model_config.draft_c_num_spec_tokens * num_spec_tokens +
+                self.model_config.draft_c_batch_size * batch_size +
+                self.model_config.draft_c_fixed)
 
     def _predict_target_time(self, batch_size: int, match_cnt: int,
                              num_kv_tokens: int, num_scheduled_tokens: int,
@@ -531,15 +628,20 @@ class AutoTuner:
                                                                match_cnt)
 
         num_batched_tokens += num_scheduled_tokens
-        target_time = (self.target_c_kv * num_kv_tokens +
-                       self.target_c_compute * num_batched_tokens +
-                       self.target_c_batch_size * batch_size +
-                       self.target_c_enable_spec_decode * (match_cnt > 0) +
-                       self.target_c_fixed)
+        print("num_kv_tokens", num_kv_tokens,
+              "num_batched_tokens", num_batched_tokens,
+              "batch_size", batch_size, "match_cnt", match_cnt)
+        
+        target_time = (
+            self.model_config.target_c_kv * num_kv_tokens +
+            self.model_config.target_c_compute * num_batched_tokens +
+            self.model_config.target_c_batch_size * batch_size +
+            self.model_config.target_c_enable_spec_decode * (match_cnt > 0) +
+            self.model_config.target_c_fixed)
         return target_time
 
     def _predict_overhead(self, target_time: float) -> float:
-        return self.overhead_percentage * target_time
+        return self.model_config.overhead_percentage * target_time
 
 
 @dataclass
@@ -547,6 +649,7 @@ class ProfilerData:
     batch_size: int
     num_compute_tokens: int
     num_kv_tokens: int
+    num_spec_tokens: int
 
     forward_start_time: float
     forward_end_time: float
@@ -560,6 +663,7 @@ class ProfilerData:
             "batch_size": self.batch_size,
             "num_compute_tokens": self.num_compute_tokens,
             "num_kv_tokens": self.num_kv_tokens,
+            "num_spec_tokens": self.num_spec_tokens,
             "forward_start_time": self.forward_start_time,
             "forward_end_time": self.forward_end_time,
             "propose_start_time": self.propose_start_time,
@@ -577,8 +681,9 @@ def timeit():
 class AutoTunerTimer:
 
     def __init__(self,
+                 num_spec_tokens: int,
                  track_goodput: bool = False,
-                 dump_path: str = "profiler_data.jsonl"):
+                 dump_path: str = "eagle_profiler_data.jsonl"):
         self.dump_path = dump_path
         self.enable_profiling = os.environ.get("ENABLE_PROFILING", "0") == "1"
         if self.enable_profiling:
@@ -586,6 +691,7 @@ class AutoTunerTimer:
         self.track_goodput = track_goodput
         if self.track_goodput:
             print("Tracking goodput is enabled.")
+        self.num_spec_tokens = num_spec_tokens
 
     def start_execution(self, requests: dict[str, CachedRequestState],
                         scheduler_output: SchedulerOutput):
@@ -637,10 +743,10 @@ class AutoTunerTimer:
 
         if self.enable_profiling:
             data = ProfilerData(self.batch_size, self.num_compute_tokens,
-                                self.num_kv_tokens, self.forward_start_time,
-                                self.forward_end_time, self.propose_start_time,
-                                self.propose_end_time, self.start_time,
-                                self.end_time)
+                                self.num_kv_tokens, self.num_spec_tokens,
+                                self.forward_start_time, self.forward_end_time,
+                                self.propose_start_time, self.propose_end_time,
+                                self.start_time, self.end_time)
 
             with open(self.dump_path, "a") as f:
                 f.write(json.dumps(data.dump()))

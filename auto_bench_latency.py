@@ -24,8 +24,8 @@ tp_model_list = [
     # [1, "Qwen/Qwen2.5-3B-Instruct"],
 ]
 dataset_datapath_list = [
-    # ["sonnet", "/data/js_park/vllm_dsd/benchmarks/sonnet.txt"],
-    ["sharegpt", "/data/js_park/vllm_dsd/ShareGPT_V3_unfiltered_cleaned_split.json"],
+    ["sonnet", "/data/js_park/vllm_dsd/benchmarks/sonnet.txt"],
+    # ["sharegpt", "/data/js_park/vllm_dsd/ShareGPT_V3_unfiltered_cleaned_split.json"],
     # ["hf", "AI-MO/aimo-validation-aime"],
     # ["hf", "likaixin/InstructCoder"],
 ]

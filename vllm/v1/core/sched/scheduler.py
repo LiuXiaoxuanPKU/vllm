@@ -7,7 +7,8 @@ from collections import deque
 from collections.abc import Iterable
 from typing import Optional, Union
 
-from vllm.config import CacheConfig, LoRAConfig, ModelConfig, SchedulerConfig
+from vllm.config import (CacheConfig, LoRAConfig, ModelConfig, SchedulerConfig,
+                         SpeculativeConfig)
 from vllm.logger import init_logger
 from vllm.multimodal import MULTIMODAL_REGISTRY, MultiModalRegistry
 from vllm.v1.core.encoder_cache_manager import (EncoderCacheManager,
@@ -39,6 +40,7 @@ class Scheduler(SchedulerInterface):
         lora_config: Optional[LoRAConfig],
         kv_cache_config: KVCacheConfig,
         structured_output_manager: StructuredOutputManager,
+        speculative_config: SpeculativeConfig = None,
         mm_registry: MultiModalRegistry = MULTIMODAL_REGISTRY,
         include_finished_set: bool = False,
         log_stats: bool = False,
@@ -112,6 +114,11 @@ class Scheduler(SchedulerInterface):
         self.encoder_cache_manager = EncoderCacheManager(
             cache_size=encoder_cache_size)
 
+        self.num_lookahead_tokens = 0
+        if speculative_config and speculative_config.method == "eagle":
+            self.num_lookahead_tokens = \
+                speculative_config.num_speculative_tokens
+
     def schedule(self) -> SchedulerOutput:
         # NOTE(woosuk) on the scheduling algorithm:
         # There's no "decoding phase" nor "prefill phase" in the scheduler.
@@ -160,6 +167,7 @@ class Scheduler(SchedulerInterface):
 
             num_new_tokens = (request.num_tokens_with_spec -
                               request.num_computed_tokens)
+            # print(f"Allocate {num_new_tokens} for {request.request_id}")
             if (0 < self.scheduler_config.long_prefill_token_threshold <
                     num_new_tokens):
                 num_new_tokens = (
@@ -196,7 +204,9 @@ class Scheduler(SchedulerInterface):
 
             while True:
                 new_blocks = self.kv_cache_manager.allocate_slots(
-                    request, num_new_tokens)
+                    request,
+                    num_new_tokens,
+                    num_lookahead_tokens=self.num_lookahead_tokens)
                 if new_blocks is None:
                     # The request cannot be scheduled.
                     # Preempt the lowest-priority request.
@@ -592,8 +602,13 @@ class Scheduler(SchedulerInterface):
             req_index = model_runner_output.req_id_to_index[req_id]
             generated_token_ids = sampled_token_ids[req_index]
 
+            if scheduler_output.old_schedule_spec_decode_tokens is None:
+                old_schedule_spec_decode_tokens = scheduler_output.scheduled_spec_decode_tokens
+            else:
+                old_schedule_spec_decode_tokens = (
+                    scheduler_output.old_schedule_spec_decode_tokens)
             scheduled_spec_token_ids = (
-                scheduler_output.scheduled_spec_decode_tokens.get(req_id))
+                old_schedule_spec_decode_tokens.get(req_id))
             if scheduled_spec_token_ids:
                 # num_computed_tokens represents the number of tokens
                 # processed in the current step, considering scheduled
@@ -601,10 +616,12 @@ class Scheduler(SchedulerInterface):
                 # num_computed_tokens is decreased by the number of rejected
                 # tokens, where is given by:
                 # len(scheduled_spec_token_ids) + 1 - len(generated_token_ids).
-                # num_tokens_rejected = (len(scheduled_spec_token_ids) + 1 -
-                #                        len(generated_token_ids))
-                # request.num_computed_tokens -= num_tokens_rejected
-                request.num_computed_tokens = request.num_tokens
+                num_tokens_rejected = (len(scheduled_spec_token_ids) + 1 -
+                                       len(generated_token_ids))
+                request.num_computed_tokens -= num_tokens_rejected
+
+                verify_tokens = (
+                    scheduler_output.scheduled_spec_decode_tokens.get(req_id))
                 # print(f"num_computed_tokens: {request.num_computed_tokens}, "
                 #         f"num_tokens_scheduled: {num_tokens_scheduled}, "
                 #         f"len(scheduled_spec_token_ids): "
@@ -618,7 +635,7 @@ class Scheduler(SchedulerInterface):
                 
                 spec_decoding_stats = self.make_spec_decoding_stats(
                     spec_decoding_stats,
-                    num_draft_tokens=len(scheduled_spec_token_ids),
+                    num_draft_tokens=len(verify_tokens),
                     num_accepted_tokens=len(generated_token_ids) - 1)
 
             cached_encoder_input_ids = (
@@ -638,6 +655,8 @@ class Scheduler(SchedulerInterface):
             # Add newly generated spec token ids to the request.
             if spec_token_ids is not None:
                 request.spec_token_ids = spec_token_ids[req_index]
+            else:
+                request.spec_token_ids = []
 
             stopped = False
             new_logprobs = None

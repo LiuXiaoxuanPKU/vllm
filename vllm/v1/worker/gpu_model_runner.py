@@ -160,13 +160,16 @@ class GPUModelRunner(LoRAModelRunnerMixin):
 
         # Set up speculative decoding.
         self.use_spec_decode = False
-        self.auto_tuner = AutoTuner(fixed_len=False, 
+        self.auto_tuner = AutoTuner(method="ngram",
+                                    fixed_len=False,
                                     request_level_dsd=False,
                                     track_goodput=False)
         if self.speculative_config:
             self.use_spec_decode = True
             self.auto_tuner.num_spec_tokens = \
                 self.speculative_config.num_speculative_tokens
+            self.auto_tuner.method = self.speculative_config.method
+            self.auto_tuner.timer.num_spec_tokens = self.speculative_config.num_speculative_tokens
             self.auto_tuner.fixed_len = not self.speculative_config.dsd 
             self.auto_tuner.request_level_dsd = \
                 self.speculative_config.dsd_req_lvl
@@ -178,6 +181,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             if get_pp_group().is_last_rank:
                 if self.speculative_config.method == "ngram":
                     self.drafter = NgramProposer(self.vllm_config)
+                    print(f"Using NgramProposer with k = {self.drafter.k}" )
                 elif self.speculative_config.method == "eagle":
                     self.drafter = EagleProposer(self.vllm_config,
                                                  self.device)  # type: ignore
@@ -286,6 +290,8 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                                         device="cpu",
                                         pin_memory=self.pin_memory)
         self.seq_lens_np = self.seq_lens_cpu.numpy()
+
+        self.disable_spec_req_ids = set()
 
     def _update_states(self, scheduler_output: "SchedulerOutput") -> None:
         """Update the cached states and the persistent batch with the scheduler
@@ -499,14 +505,10 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         self.input_batch.block_table.commit(num_reqs)
 
         # Get the number of scheduled tokens for each request.
-        # TODO: The Python loop can be slow. Optimize.
-        num_scheduled_tokens = np.empty(num_reqs, dtype=np.int32)
-        max_num_scheduled_tokens = 0
-        for i, req_id in enumerate(self.input_batch.req_ids):
-            num_tokens = scheduler_output.num_scheduled_tokens[req_id]
-            num_scheduled_tokens[i] = num_tokens
-            max_num_scheduled_tokens = max(max_num_scheduled_tokens,
-                                           num_tokens)
+        req_ids = self.input_batch.req_ids
+        tokens = [scheduler_output.num_scheduled_tokens[i] for i in req_ids]
+        num_scheduled_tokens = np.array(tokens, dtype=np.int32)
+        max_num_scheduled_tokens = max(tokens)
 
         # Get request indices.
         # E.g., [2, 5, 3] -> [0, 0, 1, 1, 1, 1, 1, 2, 2, 2]
@@ -1015,7 +1017,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         self.auto_tuner.start_execution(self.requests, scheduler_output)
 
         if not scheduler_output.total_num_scheduled_tokens:
-            # Return empty ModelRunnerOuptut if there's no work to do.
+            # Return empty ModelRunnerOutput if there's no work to do.
             return EMPTY_MODEL_RUNNER_OUTPUT
 
         if self.is_multimodal_model:
@@ -1025,8 +1027,10 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         else:
             encoder_outputs = []
 
-        spec_token_ids = self.auto_tuner.set_verify_len(
-            self.requests, scheduler_output)
+        self.auto_tuner.set_verify_len(self.requests, scheduler_output)
+        if self.auto_tuner.last_verified_len == 0:
+            self.disable_spec_req_ids = self.disable_spec_req_ids.union(
+                set(self.input_batch.req_ids))
 
         # Prepare the decoder inputs.
         attn_metadata, logits_indices, spec_decode_metadata = (
@@ -1186,84 +1190,128 @@ class GPUModelRunner(LoRAModelRunnerMixin):
 
         self.auto_tuner.timer.start_propose()
         if self.use_spec_decode:
-            self.auto_tuner.set_proposed_len(self.drafter)
+            old_proposed_len = self.auto_tuner.set_proposed_len(self.drafter)
 
-        if not self.use_spec_decode:
+        use_spec_decode = self.use_spec_decode
+        if self.speculative_config and self.speculative_config.method == "ngram":
+            use_spec_decode = self.drafter.k > 0
+        if self.speculative_config and self.speculative_config.method == "eagle":
+            self.disable_spec_req_ids -= scheduler_output.finished_req_ids
+            all_req_ids = set(self.input_batch.req_ids)
+            if self.drafter.num_speculative_tokens == 0:
+                use_spec_decode = False
+            if all_req_ids.issubset(self.disable_spec_req_ids):
+                use_spec_decode = False
+
+        if not use_spec_decode:
             # Speculative decoding is not enabled.
             spec_token_ids = None
         elif self.speculative_config.method == "ngram":
             assert isinstance(self.drafter, NgramProposer)
-            if self.drafter.k == 0:
-                spec_token_ids = None
-            else:
-                spec_token_ids = self.generate_draft_token_ids(
-                    valid_sampled_token_ids, sampling_metadata)
+            spec_token_ids = self.generate_draft_token_ids(
+                valid_sampled_token_ids, sampling_metadata)
         elif self.speculative_config.method == "eagle":
             assert isinstance(self.drafter, EagleProposer)
-            if self.drafter.num_speculative_tokens == 0:
-                spec_token_ids = None
-            else:
-                # TODO(woosuk): Refactor the loop.
-                next_token_ids: list[int] = []
-                for i, token_ids in enumerate(valid_sampled_token_ids):
-                    if token_ids:
-                        # Common case.
-                        next_token_id = token_ids[-1]
-                    else:
-                        # Partial prefill (rare case).
-                        # Get the next token id from the request state.
-                        req_id = self.input_batch.req_ids[i]
-                        req_state = self.requests[req_id]
-                        seq_len = (req_state.num_computed_tokens +
-                                scheduler_output.num_scheduled_tokens[req_id])
-                        next_token_id = req_state.get_token_id(seq_len)
-                    next_token_ids.append(next_token_id)
-                next_token_ids = torch.tensor(next_token_ids,
-                                            dtype=torch.int32,
-                                            device=self.device)
 
-                if spec_decode_metadata is None:
-                    # input_ids can be None for multimodal models.
-                    target_token_ids = self.input_ids[:num_scheduled_tokens]
-                    target_positions = positions
-                    target_hidden_states = hidden_states
-                    target_slot_mapping = attn_metadata.slot_mapping
-                    cu_num_tokens = attn_metadata.query_start_loc
+            # TODO(woosuk): Refactor the loop.
+            next_token_ids: list[int] = []
+            for i, token_ids in enumerate(valid_sampled_token_ids):
+                if token_ids:
+                    # Common case.
+                    next_token_id = token_ids[-1]
                 else:
-                    # TODO(woosuk): Refactor this.
-                    num_draft_tokens = spec_decode_metadata.num_draft_tokens
-                    num_rejected_tokens = [
-                        n + 1 - len(valid_sampled_token_ids[i]) if n > 0 else 0
-                        for i, n in enumerate(num_draft_tokens)
-                    ]
-                    num_rejected_tokens = torch.tensor(
-                        num_rejected_tokens,
-                        dtype=torch.int32,
-                        device=self.device,
-                    )
-                    cu_num_tokens, token_indices = self.drafter.prepare_inputs(
-                        attn_metadata.query_start_loc,
-                        num_rejected_tokens,
-                    )
-                    target_token_ids = self.input_ids[token_indices]
-                    target_positions = positions[token_indices]
-                    target_hidden_states = hidden_states[token_indices]
-                    target_slot_mapping = attn_metadata.slot_mapping[token_indices]
+                    # Partial prefill (rare case).
+                    # Get the next token id from the request state.
+                    req_id = self.input_batch.req_ids[i]
+                    req_state = self.requests[req_id]
+                    seq_len = (req_state.num_computed_tokens +
+                               scheduler_output.num_scheduled_tokens[req_id])
+                    next_token_id = req_state.get_token_id(seq_len)
+                next_token_ids.append(next_token_id)
+            next_token_ids = torch.tensor(next_token_ids,
+                                          dtype=torch.int32,
+                                          device=self.device)
 
-                draft_token_ids, draft_probs = self.drafter.propose(
-                    target_token_ids=target_token_ids,
-                    target_positions=target_positions,
-                    target_hidden_states=target_hidden_states,
-                    target_slot_mapping=target_slot_mapping,
-                    next_token_ids=next_token_ids,
-                    cu_num_tokens=cu_num_tokens,
-                    block_table=attn_metadata.block_table,
-                    sampling_metadata=sampling_metadata,
+            if spec_decode_metadata is None:
+                # input_ids can be None for multimodal models.
+                # We need to slice token_ids, positions, and hidden_states
+                # because the eagle head does not use cuda graph and should
+                # not include padding.
+                target_token_ids = self.input_ids[:num_scheduled_tokens]
+                target_positions = positions[:num_scheduled_tokens]
+                target_hidden_states = hidden_states[:num_scheduled_tokens]
+                target_slot_mapping = attn_metadata.slot_mapping
+                cu_num_tokens = attn_metadata.query_start_loc
+            else:
+                # TODO(woosuk): Refactor this.
+                num_draft_tokens = spec_decode_metadata.num_draft_tokens
+                num_rejected_tokens = [
+                    n + 1 - len(valid_sampled_token_ids[i]) if n > 0 else 0
+                    for i, n in enumerate(num_draft_tokens)
+                ]
+                num_rejected_tokens = torch.tensor(
+                    num_rejected_tokens,
+                    dtype=torch.int32,
+                    device=self.device,
                 )
-                spec_token_ids = draft_token_ids.tolist()
-                # TODO(woosuk): Cache draft_probs and use it for rejection sampling
-                # in the next step.
-                del draft_probs
+                cu_num_tokens, token_indices = self.drafter.prepare_inputs(
+                    attn_metadata.query_start_loc,
+                    num_rejected_tokens,
+                )
+                target_token_ids = self.input_ids[token_indices]
+                target_positions = positions[token_indices]
+                target_hidden_states = hidden_states[token_indices]
+                target_slot_mapping = attn_metadata.slot_mapping[token_indices]
+
+            draft_token_ids, draft_probs = self.drafter.propose(
+                target_token_ids=target_token_ids,
+                target_positions=target_positions,
+                target_hidden_states=target_hidden_states,
+                target_slot_mapping=target_slot_mapping,
+                next_token_ids=next_token_ids,
+                cu_num_tokens=cu_num_tokens,
+                block_table=attn_metadata.block_table,
+                sampling_metadata=sampling_metadata,
+            )
+
+            # # Assuming draft_token_ids and draft_probs are given tensors
+            # threshold = 0.2  # Example threshold
+            # draft_probs = draft_probs.softmax(dim=-1, dtype=torch.float32)
+
+            # # Step 1: Gather the probabilities of the drafted tokens
+            # probs = draft_probs.gather(
+            #     2,
+            #     draft_token_ids.unsqueeze(-1)  # Add a vocab dimension for gathering
+            # ).squeeze(-1)  # Remove the extra dimension after gathering
+
+            # # Step 2: Create a mask where probabilities are below the threshold
+            # mask = probs < threshold
+
+            # # Step 3: Compute cumulative mask to invalidate subsequent tokens after the first low-probability token
+            # cumulative_mask = mask.cumsum(dim=1) > 0
+
+            # # Step 4: Set invalidated tokens to -1 in-place
+            # draft_token_ids[cumulative_mask] = -1
+
+            # # Step 5: Convert the tensor to a list of lists
+            # # and remove -1 values (invalidated tokens)
+            # spec_token_ids = draft_token_ids.tolist()
+            # for i in range(len(spec_token_ids)):
+            #     spec_token_ids[i] = [
+            #         token_id for token_id in spec_token_ids[i] if token_id != -1
+            #     ]
+            spec_token_ids = draft_token_ids.tolist()
+            # Set disable-sd requests to empty.
+            for i, req_id in enumerate(self.input_batch.req_ids):
+                if req_id in self.disable_spec_req_ids:
+                    spec_token_ids[i] = []
+            # TODO(woosuk): Cache draft_probs and use it for rejection sampling
+            # in the next step.
+            del draft_probs
+
+        if self.use_spec_decode:
+            self.auto_tuner.resume_proposer(self.drafter, old_proposed_len)
+
         self.auto_tuner.timer.end_propose()
         
         if self.use_spec_decode:
@@ -1273,7 +1321,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                                          output_probs, self.input_batch.req_ids)
 
         self.auto_tuner.end_execution(
-            valid_sampled_token_ids,
+            valid_sampled_token_ids,  # list[list[int]]
             spec_token_ids,
             scheduler_output.scheduled_spec_decode_tokens,
             self.input_batch.req_ids
@@ -1312,8 +1360,10 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 proposed_len = self.auto_tuner.req_last_verified_len.get(
                     req_id, None)
                 if proposed_len is not None:
-                    self.auto_tuner.set_proposed_len(self.drafter, proposed_len)
-
+                    self.auto_tuner._set_proposer(self.drafter, proposed_len)
+                else:
+                    self.auto_tuner.set_proposed_len(self.drafter)
+                    
             # Add sampled_token_ids to token_ids_cpu.
             start_idx = self.input_batch.num_tokens_no_spec[i]
             end_idx = start_idx + num_sampled_ids

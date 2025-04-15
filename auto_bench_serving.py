@@ -46,40 +46,44 @@ def check_server_status(base_port):
     return server_ready
 
 tp_model_list = [
-    [4, "meta-llama/Meta-Llama-3.1-70B-Instruct"],
-    [2, "Qwen/QwQ-32B"], 
+    # [4, "meta-llama/Meta-Llama-3.1-70B-Instruct"],
+    # [2, "Qwen/QwQ-32B"], 
     [1, "meta-llama/Meta-Llama-3.1-8B-Instruct"], 
-    [1, "Qwen/Qwen2.5-3B-Instruct"],
+    # [1, "Qwen/Qwen2.5-3B-Instruct"],
 ]
 spec_config_list = [
-    None,
+    # None,
+    # """
+    # {
+    #     "model": "ngram",
+    #     "prompt_lookup_max": 7,
+    #     "prompt_lookup_min": 3,
+    #     "num_speculative_tokens": 10,
+    #     "dsd": false
+    # }
+    # """,
+    # """
+    # {
+    #     "model": "ngram",
+    #     "prompt_lookup_max": 7,
+    #     "prompt_lookup_min": 3,
+    #     "num_speculative_tokens": 10,
+    #     "dsd": true
+    # }
+    # """,
     """
     {
         "model": "ngram",
         "prompt_lookup_max": 7,
         "prompt_lookup_min": 3,
-        "num_speculative_tokens": 3
+        "num_speculative_tokens": 10,
+        "dsd": true,
+        "dsd_req_lvl": true
     }
     """,
-    """
-    {
-        "model": "ngram",
-        "prompt_lookup_max": 7,
-        "prompt_lookup_min": 3,
-        "num_speculative_tokens": 4
-    }
-    """,
-    """
-    {
-        "model": "ngram",
-        "prompt_lookup_max": 7,
-        "prompt_lookup_min": 3,
-        "num_speculative_tokens": 5
-    }
-    """
 ]
 
-req_trace_list = ["trace_qps8_1_dataset.pt",  "trace_qps8_4_dataset.pt"]
+req_trace_list = ["trace_qps8_4_dataset.pt"]
 
 output_to_stdio = True
 output_dir = f"auto_tuner_bench_serving_output_{str(int(time.time()))[-8:]}"

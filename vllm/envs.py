@@ -109,6 +109,7 @@ if TYPE_CHECKING:
     EXPORT_AUTO_TUNER_PATH: Optional[str] = None
     EXPORT_AUTO_TUNER_FLAG_PATH: Optional[str] = None
     CLEAR_AUTO_TUNER_FLAG_PATH: Optional[str] = None
+    VLLM_XGRAMMAR_CACHE_MB: int = 0
 
 
 def get_default_cache_root():
@@ -708,6 +709,12 @@ environment_variables: dict[str, Callable[[], Any]] = {
     lambda: os.getenv("EXPORT_AUTO_TUNER_FLAG_PATH", "EXPORT_AUTO_TUNER_FLAG"),
     "CLEAR_AUTO_TUNER_FLAG_PATH":
     lambda: os.getenv("CLEAR_AUTO_TUNER_FLAG_PATH", "CLEAR_AUTO_TUNER_FLAG"),
+
+    # Control the cache sized used by the xgrammar compiler. The default
+    # of 512 MB should be enough for roughly 1000 JSON schemas.
+    # It can be changed with this variable if needed for some reason.
+    "VLLM_XGRAMMAR_CACHE_MB":
+    lambda: int(os.getenv("VLLM_XGRAMMAR_CACHE_MB", "512")),
 }
 
 # end-env-vars-definition

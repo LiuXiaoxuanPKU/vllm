@@ -104,7 +104,11 @@ class RejectionSampler(nn.Module):
             sampling_metadata,
         )
         mask = output_probs != PLACEHOLDER_TOKEN_ID
-        acceptance_rate = output_probs[mask].mean()
+        valid_probs = output_probs[mask]
+        if valid_probs.numel() == 0:
+            return output_token_ids, torch.tensor(0.5)
+        else:
+            acceptance_rate = valid_probs.mean()
         return output_token_ids, acceptance_rate
 
     @staticmethod

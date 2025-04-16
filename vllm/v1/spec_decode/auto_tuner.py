@@ -39,7 +39,7 @@ class AutoTuner:
         # config
         self.update_interval = 200
         self.window_size = 100
-        self.start_acceptance_rate = 0.5
+        self.start_acceptance_rate = 0.7
         model_name = "llama-8b-h100"
         self.model_config = dsd_model_config[model_name]
         self.method = method
@@ -64,7 +64,8 @@ class AutoTuner:
                          max_draft_len: int) -> int:
         best_verified_len = 0
         max_goodput = -1.0
-        start_verified_len = 0
+        # propose at least one token for the first step.
+        start_verified_len = 1 if self.step_cnt > 1 else 0
         for i in range(start_verified_len, max_draft_len + 1):
             cur_goodput, draft_time, target_time, gen_len = self._predict_goodput(
                 batch_size, match_cnt, num_kv_tokens, num_scheduled_tokens, i)

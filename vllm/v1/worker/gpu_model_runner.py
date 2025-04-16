@@ -166,6 +166,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         if self.speculative_config:
             self.use_spec_decode = True
             self.auto_tuner.num_spec_tokens = self.speculative_config.num_speculative_tokens
+            print("Initialize auto tuner with num_spec_tokens: ", self.auto_tuner.num_spec_tokens)
             self.auto_tuner.method = self.speculative_config.method
             self.auto_tuner.timer.num_spec_tokens = self.speculative_config.num_speculative_tokens
             self.auto_tuner.fixed_len = not self.speculative_config.dsd
@@ -1107,6 +1108,8 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 logits=logits,
                 sampling_metadata=sampling_metadata,
             )
+            # We should always update counter even if no spec deocde
+            self.auto_tuner.update_stats(None, None)
         else:
             # When indexing with a tensor (bonus_logits_indices), PyTorch
             # creates a new tensor with separate storage from the original
@@ -1184,9 +1187,9 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             old_proposed_len = self.auto_tuner.set_proposed_len(self.drafter)
 
         use_spec_decode = self.use_spec_decode
-        if self.speculative_config and self.speculative_config.method == "ngram":
+        if use_spec_decode and self.speculative_config.method == "ngram":
             use_spec_decode = self.drafter.k > 0
-        if self.speculative_config and self.speculative_config.method == "eagle":
+        elif use_spec_decode and self.speculative_config.method == "eagle":
             self.disable_spec_req_ids -= scheduler_output.finished_req_ids
             all_req_ids = set(self.input_batch.req_ids)
             if self.drafter.num_speculative_tokens == 0:
@@ -1265,33 +1268,36 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 sampling_metadata=sampling_metadata,
             )
 
-            # # Assuming draft_token_ids and draft_probs are given tensors
-            # threshold = 0.2  # Example threshold
-            # draft_probs = draft_probs.softmax(dim=-1, dtype=torch.float32)
+            prune = False
+            if prune:
+                # Assuming draft_token_ids and draft_probs are given tensors
+                threshold = 0.2  # Example threshold
+                draft_probs = draft_probs.softmax(dim=-1, dtype=torch.float32)
 
-            # # Step 1: Gather the probabilities of the drafted tokens
-            # probs = draft_probs.gather(
-            #     2,
-            #     draft_token_ids.unsqueeze(-1)  # Add a vocab dimension for gathering
-            # ).squeeze(-1)  # Remove the extra dimension after gathering
+                # Step 1: Gather the probabilities of the drafted tokens
+                probs = draft_probs.gather(
+                    2,
+                    draft_token_ids.unsqueeze(-1)  # Add a vocab dimension for gathering
+                ).squeeze(-1)  # Remove the extra dimension after gathering
 
-            # # Step 2: Create a mask where probabilities are below the threshold
-            # mask = probs < threshold
+                # Step 2: Create a mask where probabilities are below the threshold
+                mask = probs < threshold
 
-            # # Step 3: Compute cumulative mask to invalidate subsequent tokens after the first low-probability token
-            # cumulative_mask = mask.cumsum(dim=1) > 0
+                # Step 3: Compute cumulative mask to invalidate subsequent tokens after the first low-probability token
+                cumulative_mask = mask.cumsum(dim=1) > 0
 
-            # # Step 4: Set invalidated tokens to -1 in-place
-            # draft_token_ids[cumulative_mask] = -1
+                # Step 4: Set invalidated tokens to -1 in-place
+                draft_token_ids[cumulative_mask] = -1
 
-            # # Step 5: Convert the tensor to a list of lists
-            # # and remove -1 values (invalidated tokens)
-            # spec_token_ids = draft_token_ids.tolist()
-            # for i in range(len(spec_token_ids)):
-            #     spec_token_ids[i] = [
-            #         token_id for token_id in spec_token_ids[i] if token_id != -1
-            #     ]
-            spec_token_ids = draft_token_ids.tolist()
+                # Step 5: Convert the tensor to a list of lists
+                # and remove -1 values (invalidated tokens)
+                spec_token_ids = draft_token_ids.tolist()
+                for i in range(len(spec_token_ids)):
+                    spec_token_ids[i] = [
+                        token_id for token_id in spec_token_ids[i] if token_id != -1
+                    ]
+            else:
+                spec_token_ids = draft_token_ids.tolist()
             # Set disable-sd requests to empty.
             for i, req_id in enumerate(self.input_batch.req_ids):
                 if req_id in self.disable_spec_req_ids:

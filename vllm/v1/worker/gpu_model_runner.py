@@ -49,6 +49,9 @@ from vllm.v1.worker.lora_model_runner_mixin import LoRAModelRunnerMixin
 
 from .utils import (gather_mm_placeholders, sanity_check_mm_encoder_outputs,
                     scatter_mm_placeholders)
+import sys
+sys.path.append("/data/lily/vllm-benchmark/")
+from benchmarks.profiler import sd_profiler
 
 if TYPE_CHECKING:
     import xgrammar as xgr
@@ -1088,6 +1091,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
 
         # Run the decoder.
         # Use persistent buffers for CUDA graphs.
+        sd_profiler.start_verify()
         with set_forward_context(attn_metadata, self.vllm_config):
             output = self.model(
                 input_ids=input_ids,
@@ -1095,6 +1099,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 intermediate_tensors=intermediate_tensors,
                 inputs_embeds=inputs_embeds,
             )
+        sd_profiler.end_verify()
 
         if self.use_aux_hidden_state_outputs:
             hidden_states, aux_hidden_states = output
@@ -1114,6 +1119,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             self.apply_grammar_bitmask(scheduler_output, logits)
 
         # Sample the next token and get logprobs if needed.
+        sd_profiler.start_sample()
         sampling_metadata = self.input_batch.sampling_metadata
         if spec_decode_metadata is None:
             sampler_output = self.sampler(
@@ -1144,6 +1150,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 sampling_metadata,
             )
             sampler_output.sampled_token_ids = output_token_ids
+        sd_profiler.end_sample()
 
         # TODO(woosuk): The following loop can be slow since it iterates over
         # the requests one by one. Optimize.
@@ -1191,6 +1198,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         for i in discard_sampled_tokens_req_indices:
             valid_sampled_token_ids[i].clear()
 
+        sd_profiler.start_propose()
         if not self.use_spec_decode:
             # Speculative decoding is not enabled.
             spec_token_ids = None
@@ -1273,6 +1281,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 sampling_metadata=sampling_metadata,
             )
             spec_token_ids = draft_token_ids.tolist()
+        sd_profiler.end_propose()
 
         # Clear KVConnector state after all KVs are generated.
         if has_kv_transfer_group():

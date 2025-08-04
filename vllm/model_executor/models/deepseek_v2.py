@@ -177,6 +177,37 @@ class DeepseekV2MoE(nn.Module):
 
         return final_hidden_states.view(num_tokens, hidden_dim)
 
+    def get_activated_experts_stats(self):
+        """Get statistics about activated experts for this layer.
+        
+        Returns:
+            dict: A dictionary containing statistics about activated experts:
+                - 'counts': List of number of activated experts per forward pass
+                - 'avg': Average number of activated experts
+                - 'min': Minimum number of activated experts
+                - 'max': Maximum number of activated experts
+        """
+        layer_stats = FusedMoE.activated_experts_count.get(f"{self.experts.layer_name}", [])
+        if not layer_stats:
+            return {
+                'counts': [],
+                'avg': 0,
+                'min': 0,
+                'max': 0
+            }
+            
+        return {
+            'counts': layer_stats,
+            'avg': sum(layer_stats) / len(layer_stats),
+            'min': min(layer_stats),
+            'max': max(layer_stats)
+        }
+
+    def reset_activated_experts_stats(self):
+        """Reset the activated experts statistics for this layer."""
+        if f"{self.experts.layer_name}" in FusedMoE.activated_experts_count:
+            del FusedMoE.activated_experts_count[f"{self.experts.layer_name}"]
+
 
 def yarn_get_mscale(scale: float = 1, mscale: float = 1) -> float:
     import math

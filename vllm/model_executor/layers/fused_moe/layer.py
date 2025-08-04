@@ -68,6 +68,7 @@ class FusedMoEMethodBase(QuantizeMethodBase):
         e_score_correction_bias: Optional[torch.Tensor] = None,
         apply_router_weight_on_input: bool = False,
         activation: str = "silu",
+        layer_name: str = "",
     ) -> torch.Tensor:
         raise NotImplementedError
 
@@ -155,6 +156,7 @@ class UnquantizedFusedMoEMethod(FusedMoEMethodBase, CustomOp):
         e_score_correction_bias: Optional[torch.Tensor] = None,
         apply_router_weight_on_input: bool = False,
         activation: str = "silu",
+        layer_name: str = "",
     ) -> torch.Tensor:
         return self.forward(
             x=x,
@@ -171,7 +173,8 @@ class UnquantizedFusedMoEMethod(FusedMoEMethodBase, CustomOp):
             scoring_func=scoring_func,
             e_score_correction_bias=e_score_correction_bias,
             activation=activation,
-            apply_router_weight_on_input=apply_router_weight_on_input)
+            apply_router_weight_on_input=apply_router_weight_on_input,
+            layer_name=layer_name)
 
     def forward_cuda(
         self,
@@ -190,6 +193,7 @@ class UnquantizedFusedMoEMethod(FusedMoEMethodBase, CustomOp):
         e_score_correction_bias: Optional[torch.Tensor] = None,
         apply_router_weight_on_input: bool = False,
         activation: str = "silu",
+        layer_name: str = "",
     ) -> torch.Tensor:
         topk_weights, topk_ids = FusedMoE.select_experts(
             hidden_states=x,
@@ -197,6 +201,7 @@ class UnquantizedFusedMoEMethod(FusedMoEMethodBase, CustomOp):
             use_grouped_topk=use_grouped_topk,
             top_k=top_k,
             renormalize=renormalize,
+            layer_name=layer_name,
             topk_group=topk_group,
             num_expert_group=num_expert_group,
             custom_routing_function=custom_routing_function,
@@ -390,6 +395,9 @@ class FusedMoE(torch.nn.Module):
         quant_config: Quantization configure.
     """
 
+    # Track activated experts per layer
+    activated_experts_count = {}
+
     def __init__(
         self,
         num_experts: int,  # Global number of experts
@@ -414,6 +422,7 @@ class FusedMoE(torch.nn.Module):
         activation: str = "silu",
     ):
         super().__init__()
+        self.layer_name = prefix
 
         if params_dtype is None:
             params_dtype = torch.get_default_dtype()
@@ -779,6 +788,7 @@ class FusedMoE(torch.nn.Module):
                        top_k: int,
                        use_grouped_topk: bool,
                        renormalize: bool,
+                       layer_name: str,
                        topk_group: Optional[int] = None,
                        num_expert_group: Optional[int] = None,
                        custom_routing_function: Optional[Callable] = None,
@@ -812,6 +822,14 @@ class FusedMoE(torch.nn.Module):
                 topk=top_k,
                 renormalize=renormalize)
 
+        # After selecting experts, count unique experts selected
+        unique_experts = torch.unique(topk_ids)
+        num_activated = len(unique_experts)
+        
+        # Store the count in the class variable
+        if layer_name not in FusedMoE.activated_experts_count:
+            FusedMoE.activated_experts_count[layer_name] = []
+        FusedMoE.activated_experts_count[layer_name].append(num_activated)
         return topk_weights, topk_ids
 
     def naive_multicast(self, x: torch.Tensor,
@@ -870,6 +888,7 @@ class FusedMoE(torch.nn.Module):
             e_score_correction_bias=self.e_score_correction_bias,
             activation=self.activation,
             apply_router_weight_on_input=self.apply_router_weight_on_input,
+            layer_name=self.layer_name,
         )
 
         if self.dp_size > 1:

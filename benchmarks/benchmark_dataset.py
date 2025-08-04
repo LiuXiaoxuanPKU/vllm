@@ -36,6 +36,7 @@ from vllm.lora.request import LoRARequest
 from vllm.lora.utils import get_adapter_absolute_path
 from vllm.multimodal import MultiModalDataDict
 from vllm.transformers_utils.tokenizer import AnyTokenizer, get_lora_tokenizer
+from vllm.model_executor.models.deepseek_v2 import DeepseekV2MoE
 
 logger = logging.getLogger(__name__)
 
@@ -401,6 +402,13 @@ class ShareGPTDataset(BenchmarkDataset):
                 entry["conversations"][0]["value"],
                 entry["conversations"][1]["value"],
             )
+            
+            prompt = tokenizer.apply_chat_template([{
+                "role": "user",
+                "content": prompt
+            }],
+                                                   add_generation_prompt=True,
+                                                   tokenize=False)
 
             lora_request, tokenizer = self.get_random_lora_request(
                 tokenizer=tokenizer, max_loras=max_loras, lora_path=lora_path)
@@ -760,6 +768,12 @@ class InstructCoderDataset(HuggingFaceDataset):
             if len(sampled_requests) >= num_requests:
                 break
             prompt = f"{item['instruction']}:\n{item['input']}"
+            prompt = tokenizer.apply_chat_template([{
+                "role": "user",
+                "content": prompt
+            }],
+                                                   add_generation_prompt=True,
+                                                   tokenize=False)
             prompt_len = len(tokenizer(prompt).input_ids)
             sampled_requests.append(
                 SampleRequest(
@@ -797,6 +811,12 @@ class AIMODataset(HuggingFaceDataset):
             if len(sampled_requests) >= num_requests:
                 break
             prompt, completion = item['problem'], item["solution"]
+            prompt = tokenizer.apply_chat_template([{
+                "role": "user",
+                "content": prompt
+            }],
+                                                   add_generation_prompt=True,
+                                                   tokenize=False)
 
             prompt_ids = tokenizer(prompt).input_ids
             completion_ids = tokenizer(completion).input_ids
@@ -895,3 +915,202 @@ class ASRDataset(HuggingFaceDataset):
                            " what Whisper supports.", skipped)
         self.maybe_oversample_requests(sampled_requests, num_requests)
         return sampled_requests
+
+
+class MTBenchDataset(HuggingFaceDataset):
+    """
+    MT-Bench Dataset.
+    https://huggingface.co/datasets/philschmid/mt-bench
+
+    We create a single turn dataset for MT-Bench. 
+    This is similar to Spec decoding benchmark setup in vLLM
+    https://github.com/vllm-project/vllm/blob/9d98ab5ec/examples/offline_inference/eagle.py#L14-L18
+    """ # noqa: E501
+
+    DEFAULT_OUTPUT_LEN = 256  # avg len used in SD bench in vLLM
+    SUPPORTED_DATASET_PATHS = {
+        "philschmid/mt-bench",
+    }
+
+    def sample(self,
+               tokenizer: PreTrainedTokenizerBase,
+               num_requests: int,
+               output_len: Optional[int] = None,
+               enable_multimodal_chat: bool = False,
+               **kwargs) -> list:
+        output_len = (output_len
+                      if output_len is not None else self.DEFAULT_OUTPUT_LEN)
+        sampled_requests = []
+
+        for item in self.data:
+            if len(sampled_requests) >= num_requests:
+                break
+            prompt = item['turns'][0]
+
+            # apply template
+            prompt = tokenizer.apply_chat_template([{
+                "role": "user",
+                "content": prompt
+            }],
+                    add_generation_prompt=True,
+                    tokenize=False)
+
+            prompt_len = len(tokenizer(prompt).input_ids)
+            sampled_requests.append(
+                SampleRequest(
+                    prompt=prompt,
+                    prompt_len=prompt_len,
+                    expected_output_len=output_len,
+                ))
+        self.maybe_oversample_requests(sampled_requests, num_requests)
+        return sampled_requests
+
+
+class CNNDailyMailDataset(HuggingFaceDataset):
+    """
+    MT-Bench Dataset.
+    https://huggingface.co/datasets/philschmid/mt-bench
+
+    We create a single turn dataset for MT-Bench. 
+    This is similar to Spec decoding benchmark setup in vLLM
+    https://github.com/vllm-project/vllm/blob/9d98ab5ec/examples/offline_inference/eagle.py#L14-L18
+    """ # noqa: E501
+
+    DEFAULT_OUTPUT_LEN = 256  # avg len used in SD bench in vLLM
+    SUPPORTED_DATASET_PATHS = {
+        "abisee/cnn_dailymail",
+    }
+
+    def sample(self,
+               tokenizer: PreTrainedTokenizerBase,
+               num_requests: int,
+               output_len: Optional[int] = None,
+               enable_multimodal_chat: bool = False,
+               **kwargs) -> list:
+        output_len = (output_len
+                      if output_len is not None else self.DEFAULT_OUTPUT_LEN)
+        sampled_requests = []
+
+        for item in self.data:
+            if len(sampled_requests) >= num_requests:
+                break
+            instruction = "Could you summarize the following article: "
+            prompt = instruction + item['article']
+
+            # apply template
+            prompt = tokenizer.apply_chat_template([{
+                "role": "user",
+                "content": prompt
+            }],
+                    add_generation_prompt=True,
+                    tokenize=False)
+
+            prompt_len = len(tokenizer(prompt).input_ids)
+            sampled_requests.append(
+                SampleRequest(
+                    prompt=prompt,
+                    prompt_len=prompt_len,
+                    expected_output_len=output_len,
+                ))
+        self.maybe_oversample_requests(sampled_requests, num_requests)
+        return sampled_requests
+
+
+def get_moe_layer_stats(model):
+    """Get statistics about activated experts from all MoE layers.
+    
+    Args:
+        model: The LLM model instance
+        
+    Returns:
+        dict: A dictionary mapping layer names to their expert statistics
+    """
+    stats = {}
+    # Access the actual model through LLM's model executor
+    model_exec = model.llm_engine.model_executor.model
+    
+    # Traverse through all modules to find MoE layers
+    for name, module in model_exec.named_modules():
+        if isinstance(module, DeepseekV2MoE):
+            stats[name] = module.get_activated_experts_stats()
+            # Reset stats for next run
+            module.reset_activated_experts_stats()
+            
+    return stats
+
+
+def get_output_filename(args):
+    """Get the output filename for results."""
+    base_name = f"{args.model.replace('/', '_')}_{args.method}_{args.dataset}"
+    return f"results/{base_name}.jsonl"
+
+def get_moe_stats_filename(args):
+    """Get the output filename for MoE statistics."""
+    base_name = f"{args.model.replace('/', '_')}_{args.method}_{args.dataset}"
+    return f"results/{base_name}_moe_stats.jsonl"
+
+
+if __name__ == "__main__":
+    args = parse_args()
+    repeat = 1
+    tokenizer = get_tokenizer(args.model,
+                            tokenizer_mode="auto",
+                            trust_remote_code=False)
+    llm = get_llm(args)
+    dataset = get_dataset(args)
+    latencies = []
+    all_requests = dataset.sample(
+            num_requests=repeat,
+            tokenizer=tokenizer,
+            output_len=None,
+        )
+    
+    batch_sizes = [1, 8, 16, 32, 64, 128]
+    
+    # Create results directory if it doesn't exist
+    os.makedirs("results", exist_ok=True)
+    
+    for batch_size in batch_sizes:
+        for i in range(repeat):
+            input_request = all_requests[i]
+            prompts = [input_request.prompt] * batch_size
+            start_time = time.time()
+            outputs = llm.generate(prompts, sampling_params, use_tqdm=True)
+            end_time = time.time()
+            duration = end_time - start_time
+            
+            # Get MoE statistics
+            moe_stats = get_moe_layer_stats(llm)
+            
+            # Basic result
+            result = {
+                "duration": duration,
+                "batch_size": batch_size,
+                "model": args.model,
+                "method": args.method,
+                "dataset": args.dataset,
+                "prompt": input_request.prompt,
+                "prompt_len": input_request.prompt_len,
+                "output_len": len(outputs[0].outputs[0].token_ids),
+                "generated_output": outputs[0].outputs[0].text,
+                "finished_reason": outputs[0].outputs[0].finish_reason,
+            }
+            
+            # Save basic result
+            with open(get_output_filename(args), "a") as f:
+                f.write(json.dumps(result))
+                f.write("\n")
+                
+            # Save MoE statistics
+            moe_result = {
+                "batch_size": batch_size,
+                "iteration": i,
+                "moe_stats": moe_stats
+            }
+            with open(get_moe_stats_filename(args), "a") as f:
+                f.write(json.dumps(moe_result))
+                f.write("\n")
+                
+            latencies.append(duration)
+        print(f"Average latency: {sum(latencies) / len(latencies)} seconds")
+

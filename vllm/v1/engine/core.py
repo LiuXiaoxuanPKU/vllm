@@ -37,9 +37,9 @@ from vllm.v1.request import Request, RequestStatus
 from vllm.v1.serial_utils import MsgpackDecoder, MsgpackEncoder
 from vllm.v1.structured_output import StructuredOutputManager
 from vllm.version import __version__ as VLLM_VERSION
-
+import torch
 import sys
-sys.path.append("/data/lily/vllm-benchmark/")
+sys.path.append("/data/lily/sd-benchmark-paper/vllm-benchmark/")
 
 from benchmarks.profiler import sd_profiler
 

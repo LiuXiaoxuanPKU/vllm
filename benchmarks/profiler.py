@@ -8,12 +8,22 @@ class SDProfiler:
         self.speculative_config = speculative_config
         self.output_path = output_path
         
+        self.start_time = -1
+        self.end_time = -1
+        self.start_propose_time = -1
+        self.end_propose_time = -1
+        self.start_sample_time = -1
+        self.end_sample_time = -1
+        self.start_verify_time = -1
+        self.end_verify_time = -1  
+        self.num_batched_tokens = -1
+        self.num_speculative_tokens = -1
+          
+        
     def start_step(self):
         self.start_time = time.perf_counter()
     
-    def end_step(self):
-        self.end_time = time.perf_counter()
-        
+    def _record(self):
         with open(self.output_path, 'a') as f:
             f.write(json.dumps({
                 "model": self.model,
@@ -29,6 +39,11 @@ class SDProfiler:
                 "start_verify": self.start_verify_time,
                 "end_verify": self.end_verify_time,
             }) + '\n')
+            
+    def end_step(self):
+        self.end_time = time.perf_counter()
+        self._record()
+       
     
     def set_step_info(self,
                       num_batched_tokens: int,
@@ -39,8 +54,10 @@ class SDProfiler:
     def start_propose(self):
         self.start_propose_time = time.perf_counter()
     
-    def end_propose(self):
+    def end_propose(self, record=False):
         self.end_propose_time = time.perf_counter()
+        if record:
+            self._record()
     
     def start_sample(self):
         self.start_sample_time = time.perf_counter()
@@ -77,6 +94,6 @@ class SDProfiler:
     
 sd_profiler = SDProfiler(
     model="model_name",
-    speculative_config={},
+    speculative_config=None,
     output_path="output.json"
 )
